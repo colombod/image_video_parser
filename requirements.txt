@@ -1,2 +1,5 @@
-transformers
-llamaindex
+transformers==4.44.0
+llama-index-core==0.10.65
+torch==2.4.0
+torchvision==0.19.0
+torchaudio==2.4.0 
