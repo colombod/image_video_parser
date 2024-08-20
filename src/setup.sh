@@ -7,6 +7,4 @@ sudo apt-get update
 sudo apt-get -y install cuda-toolkit-12-5
 
 pip install -r requirements.txt
-
-git clone https://github.com/facebookresearch/segment-anything-2.git
-cd segment-anything-2 & pip install -e .
+pip install "git+https://github.com/facebookresearch/segment-anything-2.git"

@@ -1,12 +1,13 @@
 from typing import Optional
-from llamaindex.core.schema import ImageDocument, ImageNode, NodeRelationship, RelatedNodeInfo
+from llama_index.core.schema import ImageDocument, ImageNode, NodeRelationship, RelatedNodeInfo
 from PIL import Image
 from io import BytesIO
 import base64
 import torch
-from sam2.sam2_image_predictor import SAM2ImagePredictor
+import numpy as np
+from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 
-predictor = SAM2ImagePredictor.from_pretrained("facebook/sam2-hiera-small")
+predictor = SAM2AutomaticMaskGenerator.from_pretrained("facebook/sam2-hiera-small", device_map="cpu")
 
 image = Image.open("./maestro_domenico_bini_famoso_sul_web_e_nel_mondo.jpeg")
 
@@ -22,23 +23,34 @@ document = ImageDocument(image=image_to_base64(image), mime_type=mime_type, imag
 top_level_node = ImageNode(image=document.image, mime_type=document.mime_type)
 top_level_node.relationships[NodeRelationship.SOURCE] = document.as_related_node_info()
 
-def do_shit(image_node: ImageNode) -> list[ImageNode]:
+def parse_image_node(image_node: ImageNode) -> list[ImageNode]:
     img = image_node.image
 
-    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+    with torch.inference_mode(): #, torch.autocast("cuda", dtype=torch.bfloat16):
         predictor.set_image(img)
-        masks, _, _ = predictor.predict(img)
+        annotations = predictor.generate(img) # do this if we don't already have a grid
 
         # from each mask crop the image
         cropped_images = []
-        for mask in masks:
-            cropped_image = img.copy()
-            cropped_image = cropped_image.crop(mask)
-            cropped_images.append(cropped_image)
+        for ann in annotations:
+            # ann = {
+            #     "segmentation": mask_data["segmentations"][idx],
+            #     "area": area_from_rle(mask_data["rles"][idx]),
+            #     "bbox": box_xyxy_to_xywh(mask_data["boxes"][idx]).tolist(),
+            #     "predicted_iou": mask_data["iou_preds"][idx].item(),
+            #     "point_coords": [mask_data["points"][idx].tolist()],
+            #     "stability_score": mask_data["stability_score"][idx].item(),
+            #     "crop_box": box_xyxy_to_xywh(mask_data["crop_boxes"][idx]).tolist(),
+            # }
+
+            # crop the image with the annotation provided
+            left, top, right, bottom = ann["crop_box"]
+            # cropped_image = img.crop((left, top, right, bottom))
+            cropped_image = image[top:bottom, left:right].copy()
+            cropped_images.append((cropped_image,  dict(x=left, y=top, height=bottom-top, width=right-left)))
 
         image_chunks = [image_node]
-        for c in cropped_images:
-            region = dict(x=, y=, height=, width=)
+        for c, region in cropped_images:
             metadata = dict(region=region)
             image_chunk = ImageNode(image=image_to_base64(c), mime_type=image_node.mime_type, metadata=metadata)
             image_chunk.relationships[NodeRelationship.SOURCE] = ref_doc_id(image_node)
@@ -57,4 +69,4 @@ def ref_doc_id(node: ImageNode) -> RelatedNodeInfo:
     return source_node
 
 
-parsed_nodes = do_shit(top_level_node)
+parsed_nodes = parse_image_node(top_level_node)
