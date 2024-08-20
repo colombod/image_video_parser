@@ -2,14 +2,28 @@ from typing import Optional
 from llama_index.core.schema import ImageDocument, ImageNode, NodeRelationship, RelatedNodeInfo
 from PIL import Image
 from io import BytesIO
+import shutil
 import base64
 import torch
 import numpy as np
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 
-predictor = SAM2AutomaticMaskGenerator.from_pretrained("facebook/sam2-hiera-small", device_map="cpu")
+predictor = SAM2AutomaticMaskGenerator.from_pretrained(
+    "facebook/sam2-hiera-small",
+    points_per_side=64,
+    points_per_batch=128,
+    pred_iou_thresh=0.7,
+    stability_score_thresh=0.92,
+    stability_score_offset=0.7,
+    crop_n_layers=1,
+    box_nms_thresh=0.7,
+    crop_n_points_downscale_factor=2,
+    min_mask_region_area=25.0,
+    use_m2m=True,
+    device_map="cpu"
+)
 
-image = Image.open("./maestro_domenico_bini_famoso_sul_web_e_nel_mondo.jpeg")
+image = Image.open("./images/il_vulcano_3.png").convert("RGB")
 
 def image_to_base64(pil_image, format="JPEG"):
     buffered = BytesIO()
@@ -17,21 +31,20 @@ def image_to_base64(pil_image, format="JPEG"):
     image_str = base64.b64encode(buffered.getvalue())
     return image_str.decode('utf-8') # Convert bytes to string
 
-mime_type = "image/jpg"
+mimetype = "image/jpg"
 
-document = ImageDocument(image=image_to_base64(image), mime_type=mime_type, image_mime_type=mime_type)
-top_level_node = ImageNode(image=document.image, mime_type=document.mime_type)
+document = ImageDocument(image=image_to_base64(image), mimetype=mimetype, image_mimetype=mimetype)
+top_level_node = ImageNode(image=document.image, mimetype=document.mimetype)
 top_level_node.relationships[NodeRelationship.SOURCE] = document.as_related_node_info()
 
 def parse_image_node(image_node: ImageNode) -> list[ImageNode]:
-    img = image_node.image
+    img = np.array(Image.open(image_node.resolve_image()).convert("RGB"))
 
-    with torch.inference_mode(): #, torch.autocast("cuda", dtype=torch.bfloat16):
-        predictor.set_image(img)
+    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
         annotations = predictor.generate(img) # do this if we don't already have a grid
 
         # from each mask crop the image
-        cropped_images = []
+        image_chunks = [image_node]
         for ann in annotations:
             # ann = {
             #     "segmentation": mask_data["segmentations"][idx],
@@ -44,21 +57,26 @@ def parse_image_node(image_node: ImageNode) -> list[ImageNode]:
             # }
 
             # crop the image with the annotation provided
-            left, top, right, bottom = ann["crop_box"]
+            left, top, width, height = ann["bbox"]
             # cropped_image = img.crop((left, top, right, bottom))
-            cropped_image = image[top:bottom, left:right].copy()
-            cropped_images.append((cropped_image,  dict(x=left, y=top, height=bottom-top, width=right-left)))
-
-        image_chunks = [image_node]
-        for c, region in cropped_images:
+            img_clone = img.copy()
+            img_clone = img_clone*ann["segmentation"][..., None] # we might want to add back the alpha channel here
+            cropped_image = img_clone[int(top):int(top+height), int(left):int(left+width)].copy()
+            
+            region = dict(x=left, y=top, height=height, width=width)
             metadata = dict(region=region)
-            image_chunk = ImageNode(image=image_to_base64(c), mime_type=image_node.mime_type, metadata=metadata)
-            image_chunk.relationships[NodeRelationship.SOURCE] = ref_doc_id(image_node)
-            image_chunk.relationships[NodeRelationship.PARENT] = image_node.as_related_node_info()
-            image_chunks.append(image_chunk)
+            try:
+                image_chunk = ImageNode(image=image_to_base64(Image.fromarray(cropped_image.astype(np.uint8))), mimetype=image_node.mimetype, metadata=metadata)
+                image_chunk.relationships[NodeRelationship.SOURCE] = ref_doc_id(image_node)
+                image_chunk.relationships[NodeRelationship.PARENT] = image_node.as_related_node_info()
+                image_chunks.append(image_chunk)
+            except Exception as e:
+                print(e)
+                continue
 
-        children_collection = image_node.relationships.get(NodeRelationship.CHILDREN, [])
-        image_node.relationships[NodeRelationship.CHILDREN] = children_collection + [c.as_related_node_info() for c in image_chunks[1:]]
+
+        children_collection = image_node.relationships.get(NodeRelationship.CHILD, [])
+        image_node.relationships[NodeRelationship.CHILD] = children_collection + [c.as_related_node_info() for c in image_chunks[1:]]
         return image_chunks
 
 def ref_doc_id(node: ImageNode) -> RelatedNodeInfo:
@@ -70,3 +88,9 @@ def ref_doc_id(node: ImageNode) -> RelatedNodeInfo:
 
 
 parsed_nodes = parse_image_node(top_level_node)
+# remove the ./output folder
+shutil.rmtree("./output", ignore_errors=True)
+shutil.os.mkdir("./output")
+for node in parsed_nodes:
+    # save node to folder ./output
+    Image.open(node.resolve_image()).save(f"./output/{node.node_id}.png")
