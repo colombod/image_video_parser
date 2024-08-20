@@ -8,3 +8,5 @@ import base64
 import numpy as np
 import shutil
 import torch
+
+class ImageNodeParserWorklof(Workflow):
