@@ -1,12 +1,12 @@
-from typing import Optional
+from io import BytesIO
 from llama_index.core.schema import ImageDocument, ImageNode, NodeRelationship, RelatedNodeInfo
 from PIL import Image
-from io import BytesIO
-import shutil
-import base64
-import torch
-import numpy as np
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+from typing import Optional
+import base64
+import numpy as np
+import shutil
+import torch
 
 predictor = SAM2AutomaticMaskGenerator.from_pretrained(
     "facebook/sam2-hiera-small",
