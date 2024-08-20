@@ -9,4 +9,22 @@ import numpy as np
 import shutil
 import torch
 
+class ImageLaodedEvent(Event):
+    imageDocument: ImageDocument
+
+class ImageParsedEvent(Event):
+    ImageDocument: ImageDocument
+    imageNodes: list[ImageNode]
+
+class ImageChunkGenerated:
+    imageNode: ImageNode
+
 class ImageNodeParserWorklof(Workflow):
+    
+    @step()
+    async def load_image(self, ev: StartEvent) -> ImageLaodedEvent:
+        pass
+
+    @step()
+    async def parse_image(self, ev: ImageLaodedEvent) -> StopEvent:
+        pass
