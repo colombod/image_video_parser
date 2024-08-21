@@ -13,6 +13,7 @@ import torch
 
 class ImageLaodedEvent(Event):
     image: ImageNode
+    segmentation_configuration: dict | None
 
 class ImageParsedEvent(Event):
     source: ImageNode
@@ -24,9 +25,26 @@ class ImageChunkGenerated:
 class ImageNodeParserWorklof(Workflow):
     _predictor: SAM2AutomaticMaskGenerator
     _multi_modal_llm: MultiModalLLM | None
+    _default_predictor_configuration = {
+        "model_name": "facebook/sam2-hiera-small",
+        "settings": {
+            "points_per_side": 64,
+            "points_per_batch": 128,
+            "pred_iou_thresh": 0.7,
+            "stability_score_thresh": 0.92,
+            "stability_score_offset": 0.7,
+            "crop_n_layers": 1,
+            "box_nms_thresh": 0.7,
+            "crop_n_points_downscale_factor": 2,
+            "min_mask_region_area": 25.0,
+            "use_m2m": True,
+            "device_map": "cpu"
+        }
+    }        
+    
 
-    def _init_(self,predictor: SAM2AutomaticMaskGenerator, multi_modal_llm: MultiModalLLM | None = None):
-        self._predictor = predictor
+    def _init_(self, multi_modal_llm: MultiModalLLM | None = None):
+
         self._multi_modal_llm = multi_modal_llm
 
     @step()
@@ -43,15 +61,19 @@ class ImageNodeParserWorklof(Workflow):
         Raises:
             ValueError: If no image is provided.
         """
+
+        samConfiguration = self._default_predictor_configuration
+        if ev.segmentation_configuration is not None:
+            samConfiguration = ev.segmentation_configuration
         if ev.image is not None and isinstance(ev.image, ImageNode):
-            return ImageLaodedEvent(image=ev.image)
+            return ImageLaodedEvent(image=ev.image, segmentation_configuration=samConfiguration)
         elif ev.base64_image is not None:
             document = ImageDocument(image=ev.base64_image, mimetype=ev.mimetype, image_mimetype=ev.mimetype)
-            return ImageLaodedEvent(image=document)
+            return ImageLaodedEvent(image=document, segmentation_configuration=samConfiguration)
         elif ev.image_path is not None:
             image = Image.open(ev.image_path).convert("RGB")
             document = ImageDocument(image=self.image_to_base64(image), mimetype="image/jpg", image_mimetype="image/jpg")
-            return ImageLaodedEvent(image=document)
+            return ImageLaodedEvent(image=document, segmentation_configuration=samConfiguration)
         else:
             return StopEvent()
 
@@ -64,7 +86,7 @@ class ImageNodeParserWorklof(Workflow):
         Returns:
             StopEvent: The event containing the parsed image chunks.
         """
-        parsed = self._parse_image_node(ev.image)
+        parsed = self._parse_image_node(ev.image, ev.segmentation_configuration)
 
         if len(parsed) == 0:
             return StopEvent(image=ev.image, chunks=[])
@@ -90,7 +112,7 @@ class ImageNodeParserWorklof(Workflow):
         return StopEvent(source=ev.source, chunks=ev.chunks, descriptions=image_descriptions)
 
 
-    def _parse_image_node(self, image_node: ImageNode) -> list[ImageNode]:
+    def _parse_image_node(self, image_node: ImageNode, configuration : dict) -> list[ImageNode]:
         """
         Parses an image node by cropping it into smaller image chunks based on the provided annotations.
         Args:
@@ -100,8 +122,13 @@ class ImageNodeParserWorklof(Workflow):
         """
         img = np.array(Image.open(image_node.resolve_image()).convert("RGB"))
 
+        predictor = SAM2AutomaticMaskGenerator.from_pretrained(
+            configuration["model_name"],
+            **(configuration["settings"])
+            )
+
         with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-            annotations = self._predictor.generate(img) # do this if we don't already have a grid
+            annotations = predictor.generate(img) # do this if we don't already have a grid
 
             # from each mask crop the image
             image_chunks = []
