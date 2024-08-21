@@ -1,5 +1,5 @@
 from io import BytesIO
-from llama_index.core.schema import ImageDocument, ImageNode, NodeRelationship, RelatedNodeInfo
+from llama_index.core.schema import ImageDocument, ImageNode, NodeRelationship, RelatedNodeInfo, BaseNode
 from llama_index.core.workflow import Event,StartEvent,StopEvent,Workflow,step
 from PIL import Image
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
@@ -27,23 +27,51 @@ class ImageNodeParserWorklof(Workflow):
 
     @step()
     async def load_image(self, ev: StartEvent) -> ImageLaodedEvent:
+        """
+        Load an image based on the provided event.
+
+        Args:
+            ev (StartEvent): The event containing the image information.
+
+        Returns:
+            ImageLaodedEvent: The event containing the loaded image.
+
+        Raises:
+            ValueError: If no image is provided.
+        """
         if ev.image is not None and isinstance(ev.image, ImageNode):
             return ImageLaodedEvent(image=ev.image)
         elif ev.base64_image is not None:
             image = ImageDocument(image=ev.base64_image, mimetype=ev.mimetype, image_mimetype=ev.mimetype)
-            top_level_node = ImageNode(image=image.image, mimetype=image.mimetype)
-            top_level_node.relationships[NodeRelationship.SOURCE] = image.as_related_node_info()
-            return ImageLaodedEvent(image=top_level_node)
+            return ImageLaodedEvent(image=image)
+        elif ev.image_path is not None:
+            image = Image.open("./images/il_vulcano_3.png").convert("RGB")
+            document = ImageDocument(image=self.image_to_base64(image), mimetype="image/jpg", image_mimetype="image/jpg")
+            return ImageLaodedEvent(image=image)
         else:
             raise ValueError("No image provided")
 
     @step()
     async def parse_image(self, ev: ImageLaodedEvent) -> StopEvent:
+        """
+        Parses the given image using the _parse_image_node method.
+        Parameters:
+            ev (ImageLaodedEvent): The event containing the loaded image.
+        Returns:
+            StopEvent: The event containing the parsed image chunks.
+        """
         parsed = self._parse_image_node(ev.image)
 
         return StopEvent(image=ev.image, chunks=parsed)
 
     def _parse_image_node(self, image_node: ImageNode) -> list[ImageNode]:
+        """
+        Parses an image node by cropping it into smaller image chunks based on the provided annotations.
+        Args:
+            image_node (ImageNode): The image node to be parsed.
+        Returns:
+            list[ImageNode]: A list of image chunks generated from the cropping process.
+        """
         img = np.array(Image.open(image_node.resolve_image()).convert("RGB"))
 
         with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
@@ -87,13 +115,32 @@ class ImageNodeParserWorklof(Workflow):
         self.send_event(ImageParsedEvent(source=image_node, chunks=image_chunks))
         return image_chunks
 
-    def _ref_doc_id(self, node: ImageNode) -> RelatedNodeInfo:
-        """Deprecated: Get ref doc id."""
+    def _ref_doc_id(self, node: BaseNode) -> RelatedNodeInfo:
+        """
+        Returns the related node information of the document for the given ImageNode.
+
+        Parameters:
+            node (ImageNode): The ImageNode for which to retrieve the related node information.
+
+        Returns:
+            RelatedNodeInfo: The related node information for the given ImageNode.
+        """
         source_node = node.source_node
         if source_node is None:
             return node.as_related_node_info()
         return source_node
+    
     def image_to_base64(self, pil_image, format="JPEG"):
+        """
+        Converts a PIL image to base64 string.
+
+        Args:
+            pil_image (PIL.Image.Image): The PIL image object to be converted.
+            format (str, optional): The format of the image. Defaults to "JPEG".
+
+        Returns:
+            str: The base64 encoded string representation of the image.
+        """
         buffered = BytesIO()
         pil_image.save(buffered, format=format)
         image_str = base64.b64encode(buffered.getvalue())
