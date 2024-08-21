@@ -1,23 +1,9 @@
-from io import BytesIO
-from llama_index.core.schema import ImageDocument, ImageNode
+from llama_index.core.schema import ImageNode
 from PIL import Image
-import base64
 import shutil
 import asyncio
 
 from src.image_node_parser_workflow import ImageNodeParserWorkflow
-
-# image = Image.open("./images/il_vulcano_3.png").convert("RGB")
-
-# def image_to_base64(pil_image, format="JPEG"):
-#     buffered = BytesIO()
-#     pil_image.save(buffered, format=format)
-#     image_str = base64.b64encode(buffered.getvalue())
-#     return image_str.decode('utf-8') # Convert bytes to string
-
-# mimetype = "image/jpg"
-
-# document = ImageDocument(image=image_to_base64(image), mimetype=mimetype, image_mimetype=mimetype)
 
 async def main():
     sam_config = {
