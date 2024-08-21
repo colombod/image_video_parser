@@ -1,7 +1,8 @@
 from io import BytesIO
-from llama_index.core.schema import ImageDocument, ImageNode, NodeRelationship, RelatedNodeInfo, BaseNode
+from llama_index.core.schema import ImageDocument, ImageNode, NodeRelationship, RelatedNodeInfo, BaseNode, TextNode
 from llama_index.core.workflow import Event,StartEvent,StopEvent,Workflow,step
 from llama_index.core.workflow.errors import WorkflowRuntimeError
+from llama_index.core.multi_modal_llms import MultiModalLLM
 from PIL import Image
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 from typing import Optional
@@ -22,9 +23,11 @@ class ImageChunkGenerated:
 
 class ImageNodeParserWorklof(Workflow):
     _predictor: SAM2AutomaticMaskGenerator
+    _multi_modal_llm: MultiModalLLM | None
 
-    def _init_(self,predictor: SAM2AutomaticMaskGenerator):
+    def _init_(self,predictor: SAM2AutomaticMaskGenerator, multi_modal_llm: MultiModalLLM | None = None):
         self._predictor = predictor
+        self._multi_modal_llm = multi_modal_llm
 
     @step()
     async def load_image(self, ev: StartEvent) -> ImageLaodedEvent|StopEvent:
@@ -43,17 +46,17 @@ class ImageNodeParserWorklof(Workflow):
         if ev.image is not None and isinstance(ev.image, ImageNode):
             return ImageLaodedEvent(image=ev.image)
         elif ev.base64_image is not None:
-            image = ImageDocument(image=ev.base64_image, mimetype=ev.mimetype, image_mimetype=ev.mimetype)
-            return ImageLaodedEvent(image=image)
+            document = ImageDocument(image=ev.base64_image, mimetype=ev.mimetype, image_mimetype=ev.mimetype)
+            return ImageLaodedEvent(image=document)
         elif ev.image_path is not None:
-            image = Image.open("./images/il_vulcano_3.png").convert("RGB")
+            image = Image.open(ev.image_path).convert("RGB")
             document = ImageDocument(image=self.image_to_base64(image), mimetype="image/jpg", image_mimetype="image/jpg")
-            return ImageLaodedEvent(image=image)
+            return ImageLaodedEvent(image=document)
         else:
             return StopEvent()
 
     @step()
-    async def parse_image(self, ev: ImageLaodedEvent) -> StopEvent:
+    async def parse_image(self, ev: ImageLaodedEvent) -> ImageParsedEvent | StopEvent:
         """
         Parses the given image using the _parse_image_node method.
         Parameters:
@@ -63,7 +66,29 @@ class ImageNodeParserWorklof(Workflow):
         """
         parsed = self._parse_image_node(ev.image)
 
-        return StopEvent(image=ev.image, chunks=parsed)
+        if len(parsed) == 0:
+            return StopEvent(image=ev.image, chunks=[])
+        else:
+            return ImageParsedEvent(source=ev.image, chunks=parsed)
+        
+    @step()
+    async def describe_image(self, ev: ImageParsedEvent) ->  StopEvent:
+
+        image_descriptions : list[TextNode]= []        
+       
+        if self._multi_modal_llm is not None:
+            for image_chunk in ev.chunks:
+                image_description =  self._multi_modal_llm.complete(
+                    prompt=f"Describe the image above in a few words.",
+                    image_documents=[ImageDocument(image=image_chunk.image, mimetype=image_chunk.mimetype, image_mimetype=image_chunk.mimetype)],
+                )
+                image_descriptions.append(TextNode(text=image_description, mimetype="text/plain"))
+                image_description.relationships[NodeRelationship.SOURCE] = self._ref_doc_id(ev.source)
+                image_description.relationships[NodeRelationship.PARENT] = image_chunk.as_related_node_info()
+              
+  
+        return StopEvent(source=ev.source, chunks=ev.chunks, descriptions=image_descriptions)
+
 
     def _parse_image_node(self, image_node: ImageNode) -> list[ImageNode]:
         """
@@ -112,7 +137,7 @@ class ImageNodeParserWorklof(Workflow):
 
         children_collection = image_node.relationships.get(NodeRelationship.CHILD, [])
         image_node.relationships[NodeRelationship.CHILD] = children_collection + [c.as_related_node_info() for c in image_chunks[1:]]
-        self.send_event(ImageParsedEvent(source=image_node, chunks=image_chunks))
+        
         return image_chunks
 
     def _ref_doc_id(self, node: BaseNode) -> RelatedNodeInfo:
