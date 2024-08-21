@@ -1,6 +1,7 @@
 from io import BytesIO
 from llama_index.core.schema import ImageDocument, ImageNode, NodeRelationship, RelatedNodeInfo, BaseNode
 from llama_index.core.workflow import Event,StartEvent,StopEvent,Workflow,step
+from llama_index.core.workflow.errors import WorkflowRuntimeError
 from PIL import Image
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 from typing import Optional
@@ -26,7 +27,7 @@ class ImageNodeParserWorklof(Workflow):
         self._predictor = predictor
 
     @step()
-    async def load_image(self, ev: StartEvent) -> ImageLaodedEvent:
+    async def load_image(self, ev: StartEvent) -> ImageLaodedEvent|StopEvent:
         """
         Load an image based on the provided event.
 
@@ -49,7 +50,7 @@ class ImageNodeParserWorklof(Workflow):
             document = ImageDocument(image=self.image_to_base64(image), mimetype="image/jpg", image_mimetype="image/jpg")
             return ImageLaodedEvent(image=image)
         else:
-            raise ValueError("No image provided")
+            return StopEvent()
 
     @step()
     async def parse_image(self, ev: ImageLaodedEvent) -> StopEvent:
@@ -106,9 +107,8 @@ class ImageNodeParserWorklof(Workflow):
                     image_chunks.append(image_chunk)
                     self.send_event(ImageChunkGenerated(imageNode=image_chunk))
                 except Exception as e:
-                    print(e)
+                    self.send_event(WorkflowRuntimeError(e))
                     continue
-
 
         children_collection = image_node.relationships.get(NodeRelationship.CHILD, [])
         image_node.relationships[NodeRelationship.CHILD] = children_collection + [c.as_related_node_info() for c in image_chunks[1:]]
