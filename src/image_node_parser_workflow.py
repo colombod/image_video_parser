@@ -11,7 +11,7 @@ import numpy as np
 import shutil
 import torch
 
-class ImageLaodedEvent(Event):
+class ImageLoadedEvent(Event):
     image: ImageNode
     segmentation_configuration: dict | None
 
@@ -22,13 +22,11 @@ class ImageParsedEvent(Event):
 class ImageChunkGenerated:
     imageNode: ImageNode
 
-class ImageNodeParserWorklof(Workflow):
-    _predictor: SAM2AutomaticMaskGenerator
-    _multi_modal_llm: MultiModalLLM | None
+class ImageNodeParserWorkflow(Workflow):
     _default_predictor_configuration = {
         "model_name": "facebook/sam2-hiera-small",
         "settings": {
-            "points_per_side": 64,
+            "points_per_side": 32,
             "points_per_batch": 128,
             "pred_iou_thresh": 0.7,
             "stability_score_thresh": 0.92,
@@ -42,13 +40,10 @@ class ImageNodeParserWorklof(Workflow):
         }
     }        
     
-
-    def _init_(self, multi_modal_llm: MultiModalLLM | None = None):
-
-        self._multi_modal_llm = multi_modal_llm
+    multi_modal_llm: Optional[MultiModalLLM] = None
 
     @step()
-    async def load_image(self, ev: StartEvent) -> ImageLaodedEvent|StopEvent:
+    async def load_image(self, ev: StartEvent) -> ImageLoadedEvent|StopEvent:
         """
         Load an image based on the provided event.
 
@@ -63,22 +58,22 @@ class ImageNodeParserWorklof(Workflow):
         """
 
         samConfiguration = self._default_predictor_configuration
-        if ev.segmentation_configuration is not None:
+        if hasattr(ev, "segmentation_configuration") and ev.segmentation_configuration is not None:
             samConfiguration = ev.segmentation_configuration
-        if ev.image is not None and isinstance(ev.image, ImageNode):
-            return ImageLaodedEvent(image=ev.image, segmentation_configuration=samConfiguration)
-        elif ev.base64_image is not None:
+        if hasattr(ev, "image") and ev.image is not None and isinstance(ev.image, ImageNode):
+            return ImageLoadedEvent(image=ev.image, segmentation_configuration=samConfiguration)
+        elif hasattr(ev, "base64_image") and ev.base64_image is not None:
             document = ImageDocument(image=ev.base64_image, mimetype=ev.mimetype, image_mimetype=ev.mimetype)
-            return ImageLaodedEvent(image=document, segmentation_configuration=samConfiguration)
-        elif ev.image_path is not None:
+            return ImageLoadedEvent(image=document, segmentation_configuration=samConfiguration)
+        elif hasattr(ev, "image_path") and ev.image_path is not None:
             image = Image.open(ev.image_path).convert("RGB")
             document = ImageDocument(image=self.image_to_base64(image), mimetype="image/jpg", image_mimetype="image/jpg")
-            return ImageLaodedEvent(image=document, segmentation_configuration=samConfiguration)
+            return ImageLoadedEvent(image=document, segmentation_configuration=samConfiguration)
         else:
             return StopEvent()
 
     @step()
-    async def parse_image(self, ev: ImageLaodedEvent) -> ImageParsedEvent | StopEvent:
+    async def parse_image(self, ev: ImageLoadedEvent) -> ImageParsedEvent | StopEvent:
         """
         Parses the given image using the _parse_image_node method.
         Parameters:
@@ -89,7 +84,11 @@ class ImageNodeParserWorklof(Workflow):
         parsed = self._parse_image_node(ev.image, ev.segmentation_configuration)
 
         if len(parsed) == 0:
-            return StopEvent(image=ev.image, chunks=[])
+            result = {
+                "source": ev.image,
+                "chunks": []
+            }
+            return StopEvent(result=result)
         else:
             return ImageParsedEvent(source=ev.image, chunks=parsed)
         
@@ -98,18 +97,24 @@ class ImageNodeParserWorklof(Workflow):
 
         image_descriptions : list[TextNode]= []        
        
-        if self._multi_modal_llm is not None:
+        if self.multi_modal_llm is not None:
             for image_chunk in ev.chunks:
-                image_description =  self._multi_modal_llm.complete(
+                image_description =  self.multi_modal_llm.complete(
                     prompt=f"Describe the image above in a few words.",
                     image_documents=[ImageDocument(image=image_chunk.image, mimetype=image_chunk.mimetype, image_mimetype=image_chunk.mimetype)],
                 )
-                image_descriptions.append(TextNode(text=image_description, mimetype="text/plain"))
-                image_description.relationships[NodeRelationship.SOURCE] = self._ref_doc_id(ev.source)
-                image_description.relationships[NodeRelationship.PARENT] = image_chunk.as_related_node_info()
+                image_description_node = TextNode(text=image_description, mimetype="text/plain")
+                image_description_node.relationships[NodeRelationship.SOURCE] = self._ref_doc_id(ev.source)
+                image_description_node.relationships[NodeRelationship.PARENT] = image_chunk.as_related_node_info()
+                image_descriptions.append(image_description_node)
               
-  
-        return StopEvent(source=ev.source, chunks=ev.chunks, descriptions=image_descriptions)
+        result = {
+            "source": ev.source,
+            "chunks": ev.chunks,
+            "descriptions": image_descriptions
+        }
+
+        return StopEvent(result=result)
 
 
     def _parse_image_node(self, image_node: ImageNode, configuration : dict) -> list[ImageNode]:
