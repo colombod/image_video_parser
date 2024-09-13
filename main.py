@@ -4,15 +4,27 @@ import shutil
 import asyncio
 
 from src.image_node_parser_workflow import ImageNodeParserWorkflow
+from llama_index.utils.workflow import draw_all_possible_flows, draw_most_recent_execution
+ 
 
 async def main():
     sam_config = {
         "model_name": "facebook/sam2-hiera-small",
-        "settings": {}
+        "prompt": "all the lamps",
     }   
 
     workflow = ImageNodeParserWorkflow(verbose=True)
-    result = await workflow.run(image_path="./images/il_vulcano_2.png", segmentation_configuration=sam_config)
+
+    # Draw all
+    draw_all_possible_flows(
+        workflow,
+        filename="workflow.html"
+    )
+    
+    result = await workflow.run(image_path="./images/ikea.png", segmentation_configuration=sam_config)
+    
+    # Draw an execution
+    draw_most_recent_execution(result, filename="workflow_run.html")
 
     # remove the ./output folder
     shutil.rmtree("./output", ignore_errors=True)

@@ -4,12 +4,23 @@ from llama_index.core.workflow import Event,StartEvent,StopEvent,Workflow,step
 from llama_index.core.workflow.errors import WorkflowRuntimeError
 from llama_index.core.multi_modal_llms import MultiModalLLM
 from PIL import Image
-from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+from sam2.automatic_mask_generator import SAM2ImagePredictor
 from typing import Optional
 import base64
 import numpy as np
 import shutil
 import torch
+from vision_agent.tools import owl_v2_image
+
+
+class ImageRegion:
+    def __init__(self, x: int, y: int, width: int, height: int, label: str, score: float):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.label = label
+        self.score = score
 
 class ImageLoadedEvent(Event):
     image: ImageNode
@@ -25,19 +36,19 @@ class ImageChunkGenerated:
 class ImageNodeParserWorkflow(Workflow):
     _default_predictor_configuration = {
         "model_name": "facebook/sam2-hiera-small",
-        "settings": {
-            "points_per_side": 32,
-            "points_per_batch": 128,
-            "pred_iou_thresh": 0.7,
-            "stability_score_thresh": 0.92,
-            "stability_score_offset": 0.7,
-            "crop_n_layers": 1,
-            "box_nms_thresh": 0.7,
-            "crop_n_points_downscale_factor": 2,
-            "min_mask_region_area": 25.0,
-            "use_m2m": True,
-            "device_map": "cpu"
-        }
+        # "settings": {
+        #     "points_per_side": 32,
+        #     "points_per_batch": 128,
+        #     "pred_iou_thresh": 0.7,
+        #     "stability_score_thresh": 0.92,
+        #     "stability_score_offset": 0.7,
+        #     "crop_n_layers": 1,
+        #     "box_nms_thresh": 0.7,
+        #     "crop_n_points_downscale_factor": 2,
+        #     "min_mask_region_area": 25.0,
+        #     "use_m2m": True,
+        #     "device_map": "cpu"
+        # }
     }        
     
     multi_modal_llm: Optional[MultiModalLLM] = None
@@ -75,13 +86,23 @@ class ImageNodeParserWorkflow(Workflow):
     @step()
     async def parse_image(self, ev: ImageLoadedEvent) -> ImageParsedEvent | StopEvent:
         """
-        Parses the given image using the _parse_image_node method.
+        Parses the given image using the _parse_image_node_with_sam2 method.
         Parameters:
             ev (ImageLaodedEvent): The event containing the loaded image.
         Returns:
             StopEvent: The event containing the parsed image chunks.
         """
-        parsed = self._parse_image_node(ev.image, ev.segmentation_configuration)
+        parsed: list[ImageNode] = []
+
+        if 'bbox_list' not in ev.segmentation_configuration:
+            if 'prompt' not in ev.segmentation_configuration:
+                prompt = self.multi_modal_llm.complete("List the objects in the image above.", [ev.image])
+                ev.segmentation_configuration["prompt"] = prompt
+            
+            bbox_list = self._detect_bboxes_with_owlv2(ev.image, ev.segmentation_configuration['prompt'])
+            ev.segmentation_configuration["bbox_list"] = bbox_list
+
+        parsed = self._parse_image_node_with_sam2(ev.image, ev.segmentation_configuration)
 
         if len(parsed) == 0:
             result = {
@@ -100,7 +121,7 @@ class ImageNodeParserWorkflow(Workflow):
         if self.multi_modal_llm is not None:
             for image_chunk in ev.chunks:
                 image_description =  self.multi_modal_llm.complete(
-                    prompt=f"Describe the image above in a few words.",
+                    prompt="Describe the image above in a few words.",
                     image_documents=[ImageDocument(image=image_chunk.image, mimetype=image_chunk.mimetype, image_mimetype=image_chunk.mimetype)],
                 )
                 image_description_node = TextNode(text=image_description, mimetype="text/plain")
@@ -117,7 +138,36 @@ class ImageNodeParserWorkflow(Workflow):
         return StopEvent(result=result)
 
 
-    def _parse_image_node(self, image_node: ImageNode, configuration : dict) -> list[ImageNode]:
+    def _detect_bboxes_with_owlv2(self, image_node: ImageNode, prompt: str) -> list[ImageRegion]:
+        """
+        Detects stuff and returns the annotated image.
+        Parameters:
+            image: The input image (as numpy array).
+            seg_input: The segmentation input (i.e. the prompt for the model).
+            debug (bool): Flag to enable logging for debugging purposes.
+        Returns:
+            tuple: (numpy array of image, list of (label, (x1, y1, x2, y2)) tuples)
+        """
+    
+        # Step 2: Detect stuff using owl_v2
+
+        image = np.array(Image.open(image_node.resolve_image()).convert("RGB"))
+        detections = owl_v2_image(prompt, image)
+    
+        # Prepare annotations for AnnotatedImage output
+        annotations: list[ImageRegion] = []
+        for detection in detections:
+            label = detection['label']
+            score = detection['score']
+            bbox = detection['bbox']
+            x1, y1, x2, y2 = bbox
+            image_region = ImageRegion(x1, y1, x2-x1, y2-y1, label, score)
+            annotations.append(image_region)
+    
+        return annotations
+
+
+    def _parse_image_node_with_sam2(self, image_node: ImageNode, configuration : dict) -> list[ImageNode]:
         """
         Parses an image node by cropping it into smaller image chunks based on the provided annotations.
         Args:
@@ -127,17 +177,24 @@ class ImageNodeParserWorkflow(Workflow):
         """
         img = np.array(Image.open(image_node.resolve_image()).convert("RGB"))
 
-        predictor = SAM2AutomaticMaskGenerator.from_pretrained(
+        predictor = SAM2ImagePredictor.from_pretrained(
             configuration["model_name"],
             **(configuration["settings"])
             )
 
         with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-            annotations = predictor.generate(img) # do this if we don't already have a grid
+            predictor.set_image(image_node.resolve_image())
+                
+            annotations = []
+            for bbox in configuration["bbox_list"]:
+                left, top, width, height = bbox
+                right = left + width
+                bottom = top + height
+                annotations.append(predictor.predict(box=(left, top, right, bottom)))
 
             # from each mask crop the image
             image_chunks = []
-            for ann in annotations:
+            for ann, bbox in zip(annotations, configuration["bbox_list"]):
                 # ann = {
                 #     "segmentation": mask_data["segmentations"][idx],
                 #     "area": area_from_rle(mask_data["rles"][idx]),
@@ -149,10 +206,13 @@ class ImageNodeParserWorkflow(Workflow):
                 # }
 
                 # crop the image with the annotation provided
-                left, top, width, height = ann["bbox"]
+                # left, top, width, height = ann["bbox"]
                 # cropped_image = img.crop((left, top, right, bottom))
+                left, top, width, height = bbox
+                right = left + width
+                bottom = top + height
                 img_clone = img.copy()
-                img_clone = img_clone*ann["segmentation"][..., None] # we might want to add back the alpha channel here
+                img_clone = img_clone*ann[0][..., None] # we might want to add back the alpha channel here
                 cropped_image = img_clone[int(top):int(top+height), int(left):int(left+width)].copy()
                 
                 region = dict(x=left, y=top, height=height, width=width)
