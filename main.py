@@ -11,20 +11,20 @@ async def main():
     sam_config = {
         "model_name": "facebook/sam2-hiera-small",
         "prompt": "all the lamps",
-    }   
+    }
 
     workflow = ImageNodeParserWorkflow(verbose=True)
 
     # Draw all
-    draw_all_possible_flows(
-        workflow,
-        filename="workflow.html"
-    )
+    # draw_all_possible_flows(
+    #     workflow,
+    #     filename="workflow.html"
+    # )
     
     result = await workflow.run(image_path="./images/ikea.png", segmentation_configuration=sam_config)
     
     # Draw an execution
-    draw_most_recent_execution(result, filename="workflow_run.html")
+    # draw_most_recent_execution(result, filename="workflow_run.html")
 
     # remove the ./output folder
     shutil.rmtree("./output", ignore_errors=True)

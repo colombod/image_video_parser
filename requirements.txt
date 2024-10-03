@@ -1,8 +1,7 @@
 transformers==4.44.2
-llama-index-core==0.11.9
 torch==2.4.1
 torchvision==0.19.1
 torchaudio==2.4.1 
-llama-index==0.10.67.post1
+llama-index
 vision-agent
 llama-index-utils-workflow

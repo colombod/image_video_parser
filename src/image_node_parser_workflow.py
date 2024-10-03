@@ -10,7 +10,12 @@ import base64
 import numpy as np
 import shutil
 import torch
-from vision_agent.tools import owl_v2_image
+import requests
+from PIL import Image
+import numpy as np
+import torch
+from transformers import AutoProcessor, Owlv2ForObjectDetection
+from transformers.utils.constants import OPENAI_CLIP_MEAN, OPENAI_CLIP_STD
 
 
 class ImageRegion:
@@ -30,12 +35,13 @@ class ImageParsedEvent(Event):
     source: ImageNode
     chunks: list[ImageNode]
 
-class ImageChunkGenerated:
-    imageNode: ImageNode
+class ImageChunkGenerated(Event):
+    image_node: ImageNode
 
 class ImageNodeParserWorkflow(Workflow):
     _default_predictor_configuration = {
         "model_name": "facebook/sam2-hiera-small",
+        "sam_settings": {}
         # "settings": {
         #     "points_per_side": 32,
         #     "points_per_batch": 128,
@@ -52,6 +58,18 @@ class ImageNodeParserWorkflow(Workflow):
     }        
     
     multi_modal_llm: Optional[MultiModalLLM] = None
+    processor: Optional[AutoProcessor] = None
+    model: Optional[Owlv2ForObjectDetection] = None
+
+    def get_or_create_owl_v2(self) -> Owlv2ForObjectDetection:
+        if self.model is None:
+            self.model = Owlv2ForObjectDetection.from_pretrained("google/owlv2-base-patch16-ensemble")
+        return self.model
+    
+    def get_or_create_owl_v2_processor(self) -> AutoProcessor:
+        if self.processor is None:
+            self.processor = AutoProcessor.from_pretrained("google/owlv2-base-patch16-ensemble")
+        return self.processor
 
     @step()
     async def load_image(self, ev: StartEvent) -> ImageLoadedEvent|StopEvent:
@@ -68,18 +86,18 @@ class ImageNodeParserWorkflow(Workflow):
             ValueError: If no image is provided.
         """
 
-        samConfiguration = self._default_predictor_configuration
+        sam_configuration = self._default_predictor_configuration
         if hasattr(ev, "segmentation_configuration") and ev.segmentation_configuration is not None:
-            samConfiguration = ev.segmentation_configuration
+            sam_configuration = ev.segmentation_configuration
         if hasattr(ev, "image") and ev.image is not None and isinstance(ev.image, ImageNode):
-            return ImageLoadedEvent(image=ev.image, segmentation_configuration=samConfiguration)
+            return ImageLoadedEvent(image=ev.image, segmentation_configuration=sam_configuration)
         elif hasattr(ev, "base64_image") and ev.base64_image is not None:
             document = ImageDocument(image=ev.base64_image, mimetype=ev.mimetype, image_mimetype=ev.mimetype)
-            return ImageLoadedEvent(image=document, segmentation_configuration=samConfiguration)
+            return ImageLoadedEvent(image=document, segmentation_configuration=sam_configuration)
         elif hasattr(ev, "image_path") and ev.image_path is not None:
             image = Image.open(ev.image_path).convert("RGB")
             document = ImageDocument(image=self.image_to_base64(image), mimetype="image/jpg", image_mimetype="image/jpg")
-            return ImageLoadedEvent(image=document, segmentation_configuration=samConfiguration)
+            return ImageLoadedEvent(image=document, segmentation_configuration=sam_configuration)
         else:
             return StopEvent()
 
@@ -151,16 +169,46 @@ class ImageNodeParserWorkflow(Workflow):
     
         # Step 2: Detect stuff using owl_v2
 
-        image = np.array(Image.open(image_node.resolve_image()).convert("RGB"))
-        detections = owl_v2_image(prompt, image)
-    
+        image = Image.open(image_node.resolve_image()).convert("RGB")
+        processor = self.get_or_create_owl_v2_processor()
+        model = self.get_or_create_owl_v2()
+
+
+        texts = [[prompt]]
+        inputs = processor(text=texts, images=image, return_tensors="pt")
+
+        # forward pass
+        with torch.no_grad():
+            outputs = model(**inputs)
+
+        # Note: boxes need to be visualized on the padded, unnormalized image
+        # hence we'll set the target image sizes (height, width) based on that
+        def get_preprocessed_image(pixel_values):
+            pixel_values = pixel_values.squeeze().numpy()
+            unnormalized_image = (pixel_values * np.array(OPENAI_CLIP_STD)[:, None, None]) + np.array(OPENAI_CLIP_MEAN)[:, None, None]
+            unnormalized_image = (unnormalized_image * 255).astype(np.uint8)
+            unnormalized_image = np.moveaxis(unnormalized_image, 0, -1)
+            unnormalized_image = Image.fromarray(unnormalized_image)
+            return unnormalized_image
+
+        unnormalized_image = get_preprocessed_image(inputs.pixel_values)
+
+        target_sizes = torch.Tensor([unnormalized_image.size[::-1]])
+        # Convert outputs (bounding boxes and class logits) to final bounding boxes and scores
+        results = processor.post_process_object_detection(
+            outputs=outputs, threshold=0.2, target_sizes=target_sizes
+        )
+
+        i = 0  # Retrieve predictions for the first image for the corresponding text queries
+        text = texts[i]
+        boxes, scores, labels = results[i]["boxes"], results[i]["scores"], results[i]["labels"]
+
         # Prepare annotations for AnnotatedImage output
-        annotations: list[ImageRegion] = []
-        for detection in detections:
-            label = detection['label']
-            score = detection['score']
-            bbox = detection['bbox']
-            x1, y1, x2, y2 = bbox
+        annotations: list[ImageRegion] = [] 
+        for box, score, label in zip(boxes, scores, labels):
+            box = [round(i, 2) for i in box.tolist()]
+            print(f"Detected {text[label]} with confidence {round(score.item(), 3)} at location {box}")
+            x1, y1, x2, y2 = box
             image_region = ImageRegion(x1, y1, x2-x1, y2-y1, label, score)
             annotations.append(image_region)
     
@@ -177,20 +225,19 @@ class ImageNodeParserWorkflow(Workflow):
         """
         img = np.array(Image.open(image_node.resolve_image()).convert("RGB"))
 
-        predictor = SAM2ImagePredictor.from_pretrained(
-            configuration["model_name"],
-            **(configuration["settings"])
-            )
+        sam_settings = configuration.get("sam_settings", {})
+
+        predictor = SAM2ImagePredictor.from_pretrained(configuration["model_name"], device="cpu", **sam_settings)
 
         with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-            predictor.set_image(image_node.resolve_image())
+            predictor.set_image(img)
                 
             annotations = []
             for bbox in configuration["bbox_list"]:
-                left, top, width, height = bbox
-                right = left + width
-                bottom = top + height
-                annotations.append(predictor.predict(box=(left, top, right, bottom)))
+                x, y, width, height = bbox.x, bbox.y, bbox.width, bbox.height
+                right = x + width
+                bottom = y + height
+                annotations.append(predictor.predict(box=(x, y, right, bottom)))
 
             # from each mask crop the image
             image_chunks = []
@@ -208,21 +255,21 @@ class ImageNodeParserWorkflow(Workflow):
                 # crop the image with the annotation provided
                 # left, top, width, height = ann["bbox"]
                 # cropped_image = img.crop((left, top, right, bottom))
-                left, top, width, height = bbox
-                right = left + width
-                bottom = top + height
+                x, y, width, height = bbox.x, bbox.y, bbox.width, bbox.height
+                right = x + width
+                bottom = y + height
                 img_clone = img.copy()
-                img_clone = img_clone*ann[0][..., None] # we might want to add back the alpha channel here
-                cropped_image = img_clone[int(top):int(top+height), int(left):int(left+width)].copy()
+                img_clone = img_clone*ann[0][-1][..., None] # we might want to add back the alpha channel here
+                cropped_image = img_clone[int(y):int(y+height), int(x):int(x+width)].copy()
                 
-                region = dict(x=left, y=top, height=height, width=width)
+                region = dict(x=x, y=y, height=height, width=width)
                 metadata = dict(region=region)
                 try:
                     image_chunk = ImageNode(image=self.image_to_base64(Image.fromarray(cropped_image.astype(np.uint8))), mimetype=image_node.mimetype, metadata=metadata)
                     image_chunk.relationships[NodeRelationship.SOURCE] = self._ref_doc_id(image_node)
                     image_chunk.relationships[NodeRelationship.PARENT] = image_node.as_related_node_info()
                     image_chunks.append(image_chunk)
-                    self.send_event(ImageChunkGenerated(imageNode=image_chunk))
+                    self.send_event(ImageChunkGenerated(image_node=image_chunk))
                 except Exception as e:
                     self.send_event(WorkflowRuntimeError(e))
                     continue
