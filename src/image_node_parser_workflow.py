@@ -20,11 +20,11 @@ from transformers.utils.constants import OPENAI_CLIP_MEAN, OPENAI_CLIP_STD
 from .owl_v2 import Owlv2ProcessorWithNMS
 
 class ImageRegion:
-    def __init__(self, x: int, y: int, width: int, height: int, label: str, score: float):
-        self.x = x
-        self.y = y
-        self.width = width
-        self.height = height
+    def __init__(self, x1: int, y1: int, x2: int, y2: int, label: str, score: float):
+        self.x1 = x1
+        self.y1 = y1
+        self.x2 = x2
+        self.y2 = y2
         self.label = label
         self.score = score
 
@@ -225,7 +225,7 @@ class ImageNodeParserWorkflow(Workflow):
             box = [round(i, 2) for i in box.tolist()]
             print(f"Detected {text[label]} with confidence {round(score.item(), 3)} at location {box}")
             x1, y1, x2, y2 = box
-            image_region = ImageRegion(x1, y1, x2-x1, y2-y1, label, score)
+            image_region = ImageRegion(x1, y1, x2, y2, label, score)
             annotations.append(image_region)
     
         return annotations
@@ -239,7 +239,7 @@ class ImageNodeParserWorkflow(Workflow):
         Returns:
             list[ImageNode]: A list of image chunks generated from the cropping process.
         """
-        img = np.array(Image.open(image_node.resolve_image()).convert("RGB"))
+        img = Image.open(image_node.resolve_image()).convert("RGB")
 
         sam_settings = configuration.get("sam_settings", {})
 
@@ -250,38 +250,32 @@ class ImageNodeParserWorkflow(Workflow):
                 
             annotations = []
             for bbox in configuration["bbox_list"]:
-                x, y, width, height = bbox.x, bbox.y, bbox.width, bbox.height
-                right = x + width
-                bottom = y + height
-                annotations.append(predictor.predict(box=(x, y, right, bottom)))
+                x1, y1, x2, y2 = bbox.x1, bbox.y1, bbox.x2, bbox.y2
+                annotations.append(predictor.predict(box=(x1, y1, x2, y2)))
 
             # from each mask crop the image
             image_chunks = []
             for ann, bbox in zip(annotations, configuration["bbox_list"]):
-                # ann = {
-                #     "segmentation": mask_data["segmentations"][idx],
-                #     "area": area_from_rle(mask_data["rles"][idx]),
-                #     "bbox": box_xyxy_to_xywh(mask_data["boxes"][idx]).tolist(),
-                #     "predicted_iou": mask_data["iou_preds"][idx].item(),
-                #     "point_coords": [mask_data["points"][idx].tolist()],
-                #     "stability_score": mask_data["stability_score"][idx].item(),
-                #     "crop_box": box_xyxy_to_xywh(mask_data["crop_boxes"][idx]).tolist(),
-                # }
+                box = bbox.x1, bbox.y1, bbox.x2, bbox.y2
+                mask = Image.fromarray(ann[0][-1].astype(np.uint8))
+                masked_image = Image.composite(img, Image.new("RGB", img.size), mask)
+                cropped_image = masked_image.crop(box)
 
-                # crop the image with the annotation provided
-                # left, top, width, height = ann["bbox"]
-                # cropped_image = img.crop((left, top, right, bottom))
-                x, y, width, height = bbox.x, bbox.y, bbox.width, bbox.height
-                right = x + width
-                bottom = y + height
-                img_clone = img.copy()
-                img_clone = img_clone*ann[0][-1][..., None] # we might want to add back the alpha channel here
-                cropped_image = img_clone[int(y):int(y+height), int(x):int(x+width)].copy()
+                # save bounding box and ann to disk
+                # Save bounding box and annotation to disk
+                # bbox_filename = f"bbox_{bbox.label}_{bbox.score:.2f}.txt"
+                # mask_filename = f"mask_{bbox.label}_{bbox.score:.2f}.png"
                 
-                region = dict(x=x, y=y, height=height, width=width)
+                # with open(bbox_filename, "w") as bbox_file:
+                #     bbox_file.write(f"{bbox.x1},{bbox.y1},{bbox.x2},{bbox.y2},{bbox.label},{bbox.score}\n")
+                
+                # mask.save(mask_filename)
+                
+                x1, y1, x2, y2 = box
+                region = dict(x1=x1, y1=y1, x2=x2, y2=y2)
                 metadata = dict(region=region)
                 try:
-                    image_chunk = ImageNode(image=self.image_to_base64(Image.fromarray(cropped_image.astype(np.uint8))), mimetype=image_node.mimetype, metadata=metadata)
+                    image_chunk = ImageNode(image=self.image_to_base64(cropped_image), mimetype=image_node.mimetype, metadata=metadata)
                     image_chunk.relationships[NodeRelationship.SOURCE] = self._ref_doc_id(image_node)
                     image_chunk.relationships[NodeRelationship.PARENT] = image_node.as_related_node_info()
                     image_chunks.append(image_chunk)
