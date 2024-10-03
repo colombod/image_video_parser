@@ -17,6 +17,7 @@ import torch
 from transformers import AutoProcessor, Owlv2ForObjectDetection
 from transformers.utils.constants import OPENAI_CLIP_MEAN, OPENAI_CLIP_STD
 
+from .owl_v2 import Owlv2ProcessorWithNMS
 
 class ImageRegion:
     def __init__(self, x: int, y: int, width: int, height: int, label: str, score: float):
@@ -30,6 +31,7 @@ class ImageRegion:
 class ImageLoadedEvent(Event):
     image: ImageNode
     segmentation_configuration: dict | None
+    object_detection_configuration: dict | None
 
 class ImageParsedEvent(Event):
     source: ImageNode
@@ -55,7 +57,12 @@ class ImageNodeParserWorkflow(Workflow):
         #     "use_m2m": True,
         #     "device_map": "cpu"
         # }
-    }        
+    },
+    _object_detection_configuration = dict(
+        confidence=0.1,
+        nms_threshold=0.3
+    )
+
     
     multi_modal_llm: Optional[MultiModalLLM] = None
     processor: Optional[AutoProcessor] = None
@@ -63,12 +70,12 @@ class ImageNodeParserWorkflow(Workflow):
 
     def get_or_create_owl_v2(self) -> Owlv2ForObjectDetection:
         if self.model is None:
-            self.model = Owlv2ForObjectDetection.from_pretrained("google/owlv2-base-patch16-ensemble")
+            self.model = Owlv2ForObjectDetection.from_pretrained("google/owlv2-large-patch14-ensemble")
         return self.model
     
     def get_or_create_owl_v2_processor(self) -> AutoProcessor:
         if self.processor is None:
-            self.processor = AutoProcessor.from_pretrained("google/owlv2-base-patch16-ensemble")
+            self.processor = Owlv2ProcessorWithNMS.from_pretrained("google/owlv2-large-patch14-ensemble")
         return self.processor
 
     @step()
@@ -87,6 +94,7 @@ class ImageNodeParserWorkflow(Workflow):
         """
 
         sam_configuration = self._default_predictor_configuration
+        object_detection_configuration = self._object_detection_configuration
         if hasattr(ev, "segmentation_configuration") and ev.segmentation_configuration is not None:
             sam_configuration = ev.segmentation_configuration
         if hasattr(ev, "image") and ev.image is not None and isinstance(ev.image, ImageNode):
@@ -97,7 +105,7 @@ class ImageNodeParserWorkflow(Workflow):
         elif hasattr(ev, "image_path") and ev.image_path is not None:
             image = Image.open(ev.image_path).convert("RGB")
             document = ImageDocument(image=self.image_to_base64(image), mimetype="image/jpg", image_mimetype="image/jpg")
-            return ImageLoadedEvent(image=document, segmentation_configuration=sam_configuration)
+            return ImageLoadedEvent(image=document, segmentation_configuration=sam_configuration, object_detection_configuration=object_detection_configuration)
         else:
             return StopEvent()
 
@@ -114,10 +122,15 @@ class ImageNodeParserWorkflow(Workflow):
 
         if 'bbox_list' not in ev.segmentation_configuration:
             if 'prompt' not in ev.segmentation_configuration:
-                prompt = self.multi_modal_llm.complete("List the objects in the image above.", [ev.image])
-                ev.segmentation_configuration["prompt"] = prompt
+                prompt = self.multi_modal_llm.complete("Find the most important entities in the image and produce a list of short prompts to use for an object detection model. Put each single prompt on a new line. Emit only the prompts.", [ev.image])
+                ev.segmentation_configuration["prompt"] = prompt.text
             
-            bbox_list = self._detect_bboxes_with_owlv2(ev.image, ev.segmentation_configuration['prompt'])
+            bbox_list = self._detect_bboxes_with_owlv2(
+                ev.image,
+                ev.segmentation_configuration['prompt'],
+                ev.object_detection_configuration.get("confidence", 0.1),
+                ev.object_detection_configuration.get("nms_threshold", 0.3)
+            )
             ev.segmentation_configuration["bbox_list"] = bbox_list
 
         parsed = self._parse_image_node_with_sam2(ev.image, ev.segmentation_configuration)
@@ -138,14 +151,17 @@ class ImageNodeParserWorkflow(Workflow):
        
         if self.multi_modal_llm is not None:
             for image_chunk in ev.chunks:
-                image_description =  self.multi_modal_llm.complete(
-                    prompt="Describe the image above in a few words.",
-                    image_documents=[ImageDocument(image=image_chunk.image, mimetype=image_chunk.mimetype, image_mimetype=image_chunk.mimetype)],
-                )
-                image_description_node = TextNode(text=image_description, mimetype="text/plain")
-                image_description_node.relationships[NodeRelationship.SOURCE] = self._ref_doc_id(ev.source)
-                image_description_node.relationships[NodeRelationship.PARENT] = image_chunk.as_related_node_info()
-                image_descriptions.append(image_description_node)
+                try:
+                    image_description =  self.multi_modal_llm.complete(
+                        prompt="Describe the image above in a few words.",
+                        image_documents=[ImageDocument(image=image_chunk.image, mimetype=image_chunk.mimetype, image_mimetype=image_chunk.mimetype)],
+                    )
+                    image_description_node = TextNode(text=image_description.text, mimetype="text/plain")
+                    image_description_node.relationships[NodeRelationship.SOURCE] = self._ref_doc_id(ev.source)
+                    image_description_node.relationships[NodeRelationship.PARENT] = image_chunk.as_related_node_info()
+                    image_descriptions.append(image_description_node)
+                except Exception:
+                    image_descriptions.append(None)
               
         result = {
             "source": ev.source,
@@ -156,7 +172,7 @@ class ImageNodeParserWorkflow(Workflow):
         return StopEvent(result=result)
 
 
-    def _detect_bboxes_with_owlv2(self, image_node: ImageNode, prompt: str) -> list[ImageRegion]:
+    def _detect_bboxes_with_owlv2(self, image_node: ImageNode, prompt: str, confidence: float, nms_threshold: float) -> list[ImageRegion]:
         """
         Detects stuff and returns the annotated image.
         Parameters:
@@ -174,7 +190,7 @@ class ImageNodeParserWorkflow(Workflow):
         model = self.get_or_create_owl_v2()
 
 
-        texts = [[prompt]]
+        texts = [[x.strip() for x in prompt.split("\n")]]
         inputs = processor(text=texts, images=image, return_tensors="pt")
 
         # forward pass
@@ -195,8 +211,8 @@ class ImageNodeParserWorkflow(Workflow):
 
         target_sizes = torch.Tensor([unnormalized_image.size[::-1]])
         # Convert outputs (bounding boxes and class logits) to final bounding boxes and scores
-        results = processor.post_process_object_detection(
-            outputs=outputs, threshold=0.2, target_sizes=target_sizes
+        results = processor.post_process_object_detection_with_nms(
+            outputs=outputs, threshold=confidence, nms_threshold=nms_threshold, target_sizes=target_sizes
         )
 
         i = 0  # Retrieve predictions for the first image for the corresponding text queries

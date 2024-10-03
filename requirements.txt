@@ -5,3 +5,4 @@ torchaudio==2.4.1
 llama-index
 vision-agent
 llama-index-utils-workflow
+llama-index-multi-modal-llms-azure-openai
