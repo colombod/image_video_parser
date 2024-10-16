@@ -33,6 +33,11 @@ class ImageLoadedEvent(Event):
     segmentation_configuration: dict | None
     object_detection_configuration: dict | None
 
+class BBoxCreatedEvent(Event):
+    image: ImageNode
+    segmentation_configuration: dict | None
+    object_detection_configuration: dict | None
+
 class ImageParsedEvent(Event):
     source: ImageNode
     chunks: list[ImageNode]
@@ -108,9 +113,37 @@ class ImageNodeParserWorkflow(Workflow):
             return ImageLoadedEvent(image=document, segmentation_configuration=sam_configuration, object_detection_configuration=object_detection_configuration)
         else:
             return StopEvent()
+        
+    @step()
+    async def create_bboxes(self, ev: ImageLoadedEvent) -> BBoxCreatedEvent:
+        """
+        Create bounding boxes for the image.
+        """
+        # Check if 'bbox_list' is already present in the segmentation configuration
+        if 'bbox_list' not in ev.segmentation_configuration:
+            # If 'prompt' is not present, generate prompts using the multi-modal LLM
+            if 'prompt' not in ev.segmentation_configuration:
+                prompt = self.multi_modal_llm.complete(
+                    "Find the most important entities in the image and produce a list of short prompts to use for an object detection model. Put each single prompt on a new line. Emit only the prompts.",
+                    [ev.image]
+                )
+                # Store the generated prompts in the segmentation configuration
+                ev.segmentation_configuration["prompt"] = prompt.text
+            
+            # Detect bounding boxes using Owlv2 with the specified prompt and configurations
+            bbox_list = self._detect_bboxes_with_owlv2(
+                ev.image,
+                ev.segmentation_configuration['prompt'],
+                ev.object_detection_configuration.get("confidence", 0.1),
+                ev.object_detection_configuration.get("nms_threshold", 0.3)
+            )
+
+        # Return the event with the updated segmentation configuration
+        return BBoxCreatedEvent(image=ev.image, segmentation_configuration=ev.segmentation_configuration)
+
 
     @step()
-    async def parse_image(self, ev: ImageLoadedEvent) -> ImageParsedEvent | StopEvent:
+    async def parse_image(self, ev: BBoxCreatedEvent) -> ImageParsedEvent | StopEvent:
         """
         Parses the given image using the _parse_image_node_with_sam2 method.
         Parameters:
@@ -119,19 +152,6 @@ class ImageNodeParserWorkflow(Workflow):
             StopEvent: The event containing the parsed image chunks.
         """
         parsed: list[ImageNode] = []
-
-        if 'bbox_list' not in ev.segmentation_configuration:
-            if 'prompt' not in ev.segmentation_configuration:
-                prompt = self.multi_modal_llm.complete("Find the most important entities in the image and produce a list of short prompts to use for an object detection model. Put each single prompt on a new line. Emit only the prompts.", [ev.image])
-                ev.segmentation_configuration["prompt"] = prompt.text
-            
-            bbox_list = self._detect_bboxes_with_owlv2(
-                ev.image,
-                ev.segmentation_configuration['prompt'],
-                ev.object_detection_configuration.get("confidence", 0.1),
-                ev.object_detection_configuration.get("nms_threshold", 0.3)
-            )
-            ev.segmentation_configuration["bbox_list"] = bbox_list
 
         parsed = self._parse_image_node_with_sam2(ev.image, ev.segmentation_configuration)
 
@@ -145,30 +165,59 @@ class ImageNodeParserWorkflow(Workflow):
             return ImageParsedEvent(source=ev.image, chunks=parsed)
         
     @step()
-    async def describe_image(self, ev: ImageParsedEvent) ->  StopEvent:
+    async def describe_image(self, ev: ImageParsedEvent) -> StopEvent:
+        """
+        Generates descriptions for each chunk of the parsed image.
 
-        image_descriptions : list[TextNode]= []        
-       
+        This method iterates over the image chunks in the parsed event and uses a multi-modal
+        language model to generate textual descriptions for each chunk. The descriptions are
+        stored as TextNode instances with associated relationships to the source and parent nodes.
+
+        Args:
+            ev (ImageParsedEvent): The event containing the parsed image and its chunks.
+
+        Returns:
+            StopEvent: An event containing the source image, the image chunks, and their corresponding descriptions.
+        """
+        image_descriptions: list[TextNode] = []
+        
+        # Check if a multi-modal language model is available
         if self.multi_modal_llm is not None:
             for image_chunk in ev.chunks:
                 try:
-                    image_description =  self.multi_modal_llm.complete(
+                    # Generate a description for the current image chunk
+                    image_description = self.multi_modal_llm.complete(
                         prompt="Describe the image above in a few words.",
-                        image_documents=[ImageDocument(image=image_chunk.image, mimetype=image_chunk.mimetype, image_mimetype=image_chunk.mimetype)],
+                        image_documents=[
+                            ImageDocument(
+                                image=image_chunk.image,
+                                mimetype=image_chunk.mimetype,
+                                image_mimetype=image_chunk.mimetype
+                            )
+                        ],
                     )
-                    image_description_node = TextNode(text=image_description.text, mimetype="text/plain")
+                    # Create a TextNode for the description
+                    image_description_node = TextNode(
+                        text=image_description.text,
+                        mimetype="text/plain"
+                    )
+                    # Establish relationships for the description node
                     image_description_node.relationships[NodeRelationship.SOURCE] = self._ref_doc_id(ev.source)
                     image_description_node.relationships[NodeRelationship.PARENT] = image_chunk.as_related_node_info()
+                    # Append the description node to the list
                     image_descriptions.append(image_description_node)
                 except Exception:
+                    # In case of an error, append None to maintain list length
                     image_descriptions.append(None)
-              
+          
+        # Prepare the result dictionary with descriptions
         result = {
             "source": ev.source,
             "chunks": ev.chunks,
             "descriptions": image_descriptions
         }
 
+        # Return the StopEvent with the result
         return StopEvent(result=result)
 
 
