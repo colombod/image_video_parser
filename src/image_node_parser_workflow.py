@@ -3,6 +3,7 @@ from llama_index.core.schema import ImageDocument, ImageNode, NodeRelationship, 
 from llama_index.core.workflow import Event,StartEvent,StopEvent,Workflow,step
 from llama_index.core.workflow.errors import WorkflowRuntimeError
 from llama_index.core.multi_modal_llms import MultiModalLLM
+import logging
 from PIL import Image
 from sam2.automatic_mask_generator import SAM2ImagePredictor
 from typing import Optional
@@ -34,6 +35,14 @@ class ImageLoadedEvent(Event):
     object_detection_configuration: dict | None
 
 class BBoxCreatedEvent(Event):
+    """
+    Event triggered when a bounding box is created for an image.
+
+    Attributes:
+        image (ImageNode): The image associated with the bounding box.
+        segmentation_configuration (dict, optional): Configuration settings for image segmentation.
+        object_detection_configuration (dict, optional): Configuration settings for object detection.
+    """
     image: ImageNode
     segmentation_configuration: dict | None
     object_detection_configuration: dict | None
@@ -120,23 +129,31 @@ class ImageNodeParserWorkflow(Workflow):
         Create bounding boxes for the image.
         """
         # Check if 'bbox_list' is already present in the segmentation configuration
-        if 'bbox_list' not in ev.segmentation_configuration:
-            # If 'prompt' is not present, generate prompts using the multi-modal LLM
-            if 'prompt' not in ev.segmentation_configuration:
-                prompt = self.multi_modal_llm.complete(
-                    "Find the most important entities in the image and produce a list of short prompts to use for an object detection model. Put each single prompt on a new line. Emit only the prompts.",
-                    [ev.image]
+            # Start of Selection
+        try:
+            if 'bbox_list' not in ev.segmentation_configuration:
+                # If 'prompt' is not present, generate prompts using the multi-modal LLM
+                if 'prompt' not in ev.segmentation_configuration:
+                    prompt = self.multi_modal_llm.complete(
+                        "Find the most important entities in the image and produce a list of short prompts to use for an object detection model. Put each single prompt on a new line. Emit only the prompts.",
+                        [ev.image]
+                    )
+                    # Store the generated prompts in the segmentation configuration
+                    ev.segmentation_configuration["prompt"] = prompt.text
+                
+                # Detect bounding boxes using Owlv2 with the specified prompt and configurations
+                bbox_list = self._detect_bboxes_with_owlv2(
+                    ev.image,
+                    ev.segmentation_configuration['prompt'],
+                    ev.object_detection_configuration.get("confidence", 0.1),
+                    ev.object_detection_configuration.get("nms_threshold", 0.3)
                 )
-                # Store the generated prompts in the segmentation configuration
-                ev.segmentation_configuration["prompt"] = prompt.text
-            
-            # Detect bounding boxes using Owlv2 with the specified prompt and configurations
-            bbox_list = self._detect_bboxes_with_owlv2(
-                ev.image,
-                ev.segmentation_configuration['prompt'],
-                ev.object_detection_configuration.get("confidence", 0.1),
-                ev.object_detection_configuration.get("nms_threshold", 0.3)
-            )
+                
+        except Exception as e:
+            # Start Generation Here
+            logging.error(f"Failed to create bounding boxes: {e}", exc_info=True)
+            # Handle exceptions by logging the error and stopping the workflow
+            return StopEvent(reason="Bounding box creation failed due to an error.")
 
         # Return the event with the updated segmentation configuration
         return BBoxCreatedEvent(image=ev.image, segmentation_configuration=ev.segmentation_configuration)
