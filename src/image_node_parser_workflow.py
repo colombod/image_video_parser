@@ -93,7 +93,7 @@ class ImageNodeParserWorkflow(Workflow):
         return self.processor
 
     @step()
-    async def load_image(self, ev: StartEvent) -> ImageLoadedEvent|StopEvent:
+    async def load_image(self, start_event: StartEvent) -> ImageLoadedEvent|StopEvent:
         """
         Load an image based on the provided event.
 
@@ -109,44 +109,44 @@ class ImageNodeParserWorkflow(Workflow):
 
         sam_configuration = self._default_predictor_configuration
         object_detection_configuration = self._object_detection_configuration
-        if hasattr(ev, "segmentation_configuration") and ev.segmentation_configuration is not None:
-            sam_configuration = ev.segmentation_configuration
-        if hasattr(ev, "image") and ev.image is not None and isinstance(ev.image, ImageNode):
-            return ImageLoadedEvent(image=ev.image, segmentation_configuration=sam_configuration)
-        elif hasattr(ev, "base64_image") and ev.base64_image is not None:
-            document = ImageDocument(image=ev.base64_image, mimetype=ev.mimetype, image_mimetype=ev.mimetype)
+        if hasattr(start_event, "segmentation_configuration") and start_event.segmentation_configuration is not None:
+            sam_configuration = start_event.segmentation_configuration
+        if hasattr(start_event, "image") and start_event.image is not None and isinstance(start_event.image, ImageNode):
+            return ImageLoadedEvent(image=start_event.image, segmentation_configuration=sam_configuration)
+        elif hasattr(start_event, "base64_image") and start_event.base64_image is not None:
+            document = ImageDocument(image=start_event.base64_image, mimetype=start_event.mimetype, image_mimetype=start_event.mimetype)
             return ImageLoadedEvent(image=document, segmentation_configuration=sam_configuration)
-        elif hasattr(ev, "image_path") and ev.image_path is not None:
-            image = Image.open(ev.image_path).convert("RGB")
+        elif hasattr(start_event, "image_path") and start_event.image_path is not None:
+            image = Image.open(start_event.image_path).convert("RGB")
             document = ImageDocument(image=self.image_to_base64(image), mimetype="image/jpg", image_mimetype="image/jpg")
             return ImageLoadedEvent(image=document, segmentation_configuration=sam_configuration, object_detection_configuration=object_detection_configuration)
         else:
             return StopEvent()
         
     @step()
-    async def create_bboxes(self, ev: ImageLoadedEvent) -> BBoxCreatedEvent:
+    async def create_bboxes(self, image_laoded_event: ImageLoadedEvent) -> BBoxCreatedEvent:
         """
         Create bounding boxes for the image.
         """
         # Check if 'bbox_list' is already present in the segmentation configuration
             # Start of Selection
         try:
-            if 'bbox_list' not in ev.segmentation_configuration:
+            if 'bbox_list' not in image_laoded_event.segmentation_configuration:
                 # If 'prompt' is not present, generate prompts using the multi-modal LLM
-                if 'prompt' not in ev.segmentation_configuration:
+                if 'prompt' not in image_laoded_event.segmentation_configuration:
                     prompt = self.multi_modal_llm.complete(
                         "Find the most important entities in the image and produce a list of short prompts to use for an object detection model. Put each single prompt on a new line. Emit only the prompts.",
-                        [ev.image]
+                        [image_laoded_event.image]
                     )
                     # Store the generated prompts in the segmentation configuration
-                    ev.segmentation_configuration["prompt"] = prompt.text
+                    image_laoded_event.segmentation_configuration["prompt"] = prompt.text
                 
                 # Detect bounding boxes using Owlv2 with the specified prompt and configurations
                 bbox_list = self._detect_bboxes_with_owlv2(
-                    ev.image,
-                    ev.segmentation_configuration['prompt'],
-                    ev.object_detection_configuration.get("confidence", 0.1),
-                    ev.object_detection_configuration.get("nms_threshold", 0.3)
+                    image_laoded_event.image,
+                    image_laoded_event.segmentation_configuration['prompt'],
+                    image_laoded_event.object_detection_configuration.get("confidence", 0.1),
+                    image_laoded_event.object_detection_configuration.get("nms_threshold", 0.3)
                 )
                 
         except Exception as e:
@@ -156,11 +156,11 @@ class ImageNodeParserWorkflow(Workflow):
             return StopEvent(reason="Bounding box creation failed due to an error.")
 
         # Return the event with the updated segmentation configuration
-        return BBoxCreatedEvent(image=ev.image, segmentation_configuration=ev.segmentation_configuration)
+        return BBoxCreatedEvent(image=image_laoded_event.image, segmentation_configuration=image_laoded_event.segmentation_configuration)
 
 
     @step()
-    async def parse_image(self, ev: BBoxCreatedEvent) -> ImageParsedEvent | StopEvent:
+    async def parse_image(self, bounding_boxes_created_event: BBoxCreatedEvent) -> ImageParsedEvent | StopEvent:
         """
         Parses the given image using the _parse_image_node_with_sam2 method.
         Parameters:
@@ -170,19 +170,19 @@ class ImageNodeParserWorkflow(Workflow):
         """
         parsed: list[ImageNode] = []
 
-        parsed = self._parse_image_node_with_sam2(ev.image, ev.segmentation_configuration)
+        parsed = self._parse_image_node_with_sam2(bounding_boxes_created_event.image, bounding_boxes_created_event.segmentation_configuration)
 
         if len(parsed) == 0:
             result = {
-                "source": ev.image,
+                "source": bounding_boxes_created_event.image,
                 "chunks": []
             }
             return StopEvent(result=result)
         else:
-            return ImageParsedEvent(source=ev.image, chunks=parsed)
+            return ImageParsedEvent(source=bounding_boxes_created_event.image, chunks=parsed)
         
     @step()
-    async def describe_image(self, ev: ImageParsedEvent) -> StopEvent:
+    async def describe_image(self, image_parsed_event: ImageParsedEvent) -> StopEvent:
         """
         Generates descriptions for each chunk of the parsed image.
 
@@ -200,7 +200,7 @@ class ImageNodeParserWorkflow(Workflow):
         
         # Check if a multi-modal language model is available
         if self.multi_modal_llm is not None:
-            for image_chunk in ev.chunks:
+            for image_chunk in image_parsed_event.chunks:
                 try:
                     # Generate a description for the current image chunk
                     image_description = self.multi_modal_llm.complete(
@@ -219,7 +219,7 @@ class ImageNodeParserWorkflow(Workflow):
                         mimetype="text/plain"
                     )
                     # Establish relationships for the description node
-                    image_description_node.relationships[NodeRelationship.SOURCE] = self._ref_doc_id(ev.source)
+                    image_description_node.relationships[NodeRelationship.SOURCE] = self._ref_doc_id(image_parsed_event.source)
                     image_description_node.relationships[NodeRelationship.PARENT] = image_chunk.as_related_node_info()
                     # Append the description node to the list
                     image_descriptions.append(image_description_node)
@@ -229,8 +229,8 @@ class ImageNodeParserWorkflow(Workflow):
           
         # Prepare the result dictionary with descriptions
         result = {
-            "source": ev.source,
-            "chunks": ev.chunks,
+            "source": image_parsed_event.source,
+            "chunks": image_parsed_event.chunks,
             "descriptions": image_descriptions
         }
 
