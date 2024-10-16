@@ -238,9 +238,12 @@ class ImageNodeParserWorkflow(Workflow):
         """
         image_descriptions: list[TextNode] = []
         
+        # Check if a multi-modal language model is available
         if self.multi_modal_llm is not None:
+            # Iterate over each chunk of the parsed image
             for image_chunk in image_parsed_event.chunks:
                 try:
+                    # Use the multi-modal language model to generate a description for the image chunk
                     image_description = self.multi_modal_llm.complete(
                         prompt="Describe the image above in a few words.",
                         image_documents=[
@@ -251,14 +254,19 @@ class ImageNodeParserWorkflow(Workflow):
                             )
                         ],
                     )
+                    # Create a TextNode to store the generated description
                     image_description_node = TextNode(
                         text=image_description.text,
                         mimetype="text/plain"
                     )
+                    # Establish a relationship between the description node and the source image node
                     image_description_node.relationships[NodeRelationship.SOURCE] = self._ref_doc_id(image_parsed_event.source)
+                    # Establish a parent relationship to the current image chunk
                     image_description_node.relationships[NodeRelationship.PARENT] = image_chunk.as_related_node_info()
+                    # Append the description node to the list of image descriptions
                     image_descriptions.append(image_description_node)
                 except Exception:
+                    # If an error occurs during description generation, append None to maintain list integrity
                     image_descriptions.append(None)
           
         result = {
@@ -293,16 +301,27 @@ class ImageNodeParserWorkflow(Workflow):
             outputs = model(**inputs)
 
         def get_preprocessed_image(pixel_values):
+            # Step 1: Remove the batch dimension from pixel_values and convert to numpy array
             pixel_values = pixel_values.squeeze().numpy()
+            
+            # Step 2: Unnormalize the image by applying the inverse of CLIP's normalization
+            # Multiply by standard deviation and add mean
             unnormalized_image = (pixel_values * np.array(OPENAI_CLIP_STD)[:, None, None]) + np.array(OPENAI_CLIP_MEAN)[:, None, None]
+            
+            # Step 3: Scale the pixel values to 0-255 range and convert to 8-bit unsigned integer
             unnormalized_image = (unnormalized_image * 255).astype(np.uint8)
+            
+            # Step 4: Rearrange the color channel axis from first to last (CHW to HWC)
             unnormalized_image = np.moveaxis(unnormalized_image, 0, -1)
+            
+            # Step 5: Convert the numpy array to a PIL Image object
             unnormalized_image = Image.fromarray(unnormalized_image)
             return unnormalized_image
 
         unnormalized_image = get_preprocessed_image(inputs.pixel_values)
 
         target_sizes = torch.Tensor([unnormalized_image.size[::-1]])
+        
         results = processor.post_process_object_detection_with_nms(
             outputs=outputs, threshold=confidence, nms_threshold=nms_threshold, target_sizes=target_sizes
         )
@@ -346,23 +365,34 @@ class ImageNodeParserWorkflow(Workflow):
                 x1, y1, x2, y2 = bbox.x1, bbox.y1, bbox.x2, bbox.y2
                 annotations.append(predictor.predict(box=(x1, y1, x2, y2)))
 
+            # Initialize a list to hold the generated image chunks
             image_chunks = []
+            # Iterate over the annotations and corresponding bounding boxes
             for ann, bbox in zip(annotations, configuration["bbox_list"]):
+                # Extract the coordinates of the bounding box
                 box = bbox.x1, bbox.y1, bbox.x2, bbox.y2
+                # Create a mask from the annotation array
                 mask = Image.fromarray(ann[0][-1].astype(np.uint8))
+                # Composite the original image with a new RGB image using the mask
                 masked_image = Image.composite(img, Image.new("RGB", img.size), mask)
+                # Crop the masked image to the bounding box dimensions
                 cropped_image = masked_image.crop(box)
 
+                # Prepare metadata for the image chunk
                 x1, y1, x2, y2 = box
                 region = dict(x1=x1, y1=y1, x2=x2, y2=y2)
                 metadata = dict(region=region)
                 try:
+                    # Create an ImageNode from the cropped image and set its relationships
                     image_chunk = ImageNode(image=self.image_to_base64(cropped_image), mimetype=image_node.mimetype, metadata=metadata)
                     image_chunk.relationships[NodeRelationship.SOURCE] = self._ref_doc_id(image_node)
                     image_chunk.relationships[NodeRelationship.PARENT] = image_node.as_related_node_info()
+                    # Append the created image chunk to the list
                     image_chunks.append(image_chunk)
+                    # Send an event indicating that an image chunk has been generated
                     self.send_event(ImageChunkGenerated(image_node=image_chunk))
                 except Exception as e:
+                    # Handle any exceptions by sending a workflow runtime error event
                     self.send_event(WorkflowRuntimeError(e))
                     continue
 
