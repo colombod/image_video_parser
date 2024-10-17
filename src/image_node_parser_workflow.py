@@ -330,12 +330,24 @@ class ImageNodeParserWorkflow(Workflow):
         text = texts[i]
         boxes, scores, labels = results[i]["boxes"], results[i]["scores"], results[i]["labels"]
 
+        # Initialize an empty list to store ImageRegion objects
         annotations: list[ImageRegion] = [] 
+        
+        # Iterate through the detected boxes, scores, and labels
         for box, score, label in zip(boxes, scores, labels):
+            # Round the box coordinates to 2 decimal places
             box = [round(i, 2) for i in box.tolist()]
+            
+            # Print detection information for debugging
             print(f"Detected {text[label]} with confidence {round(score.item(), 3)} at location {box}")
+            
+            # Unpack the box coordinates
             x1, y1, x2, y2 = box
+            
+            # Create an ImageRegion object with the detection information
             image_region = ImageRegion(x1, y1, x2, y2, label, score)
+            
+            # Add the ImageRegion to the annotations list
             annotations.append(image_region)
     
         return annotations
