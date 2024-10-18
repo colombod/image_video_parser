@@ -47,6 +47,7 @@ class BBoxCreatedEvent(Event):
     segmentation_configuration: dict | None
     object_detection_configuration: dict | None
 
+
 class ImageParsedEvent(Event):
     """
     Event triggered when an image has been successfully parsed.
@@ -58,6 +59,7 @@ class ImageParsedEvent(Event):
     source: ImageNode
     chunks: list[ImageNode]
 
+
 class ImageChunkGenerated(Event):
     """
     Event triggered when an image chunk is generated.
@@ -66,6 +68,8 @@ class ImageChunkGenerated(Event):
         image_node (ImageNode): The image node representing the generated chunk.
     """
     image_node: ImageNode
+
+
 class ImageNodeParserWorkflow(Workflow):
     """
     Workflow for parsing images and generating bounding boxes and descriptions.
@@ -189,12 +193,15 @@ class ImageNodeParserWorkflow(Workflow):
                     image_laoded_event.object_detection_configuration.get("confidence", 0.1),
                     image_laoded_event.object_detection_configuration.get("nms_threshold", 0.3)
                 )
+
+                image_laoded_event.segmentation_configuration["bbox_list"] = bbox_list
+
+            return BBoxCreatedEvent(image=image_laoded_event.image, segmentation_configuration=image_laoded_event.segmentation_configuration)
                 
         except Exception as e:
             logging.error(f"Failed to create bounding boxes: {e}", exc_info=True)
             return StopEvent(reason="Bounding box creation failed due to an error.")
 
-        return BBoxCreatedEvent(image=image_laoded_event.image, segmentation_configuration=image_laoded_event.segmentation_configuration)
 
     @step()
     async def parse_image(self, bounding_boxes_created_event: BBoxCreatedEvent) -> ImageParsedEvent | StopEvent:
