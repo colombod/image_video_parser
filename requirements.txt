@@ -2,7 +2,5 @@ transformers==4.44.2
 torch==2.4.1
 torchvision==0.19.1
 torchaudio==2.4.1 
-llama-index
-vision-agent
-llama-index-utils-workflow
-llama-index-multi-modal-llms-azure-openai
+llama-index==0.11.18
+llama-index-utils-workflow==0.2.1
