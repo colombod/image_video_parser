@@ -1,6 +1,6 @@
 from io import BytesIO
 from llama_index.core.schema import ImageDocument, ImageNode, NodeRelationship, RelatedNodeInfo, BaseNode, TextNode
-from llama_index.core.workflow import Event,StartEvent,StopEvent,Workflow,step
+from llama_index.core.workflow import Event, StartEvent, StopEvent, Workflow, step
 from llama_index.core.workflow.errors import WorkflowRuntimeError
 from llama_index.core.multi_modal_llms import MultiModalLLM
 import logging
@@ -9,30 +9,21 @@ from sam2.automatic_mask_generator import SAM2ImagePredictor
 from typing import Optional
 import base64
 import numpy as np
-import shutil
 import torch
-import requests
 from PIL import Image
 import numpy as np
 import torch
-from transformers import AutoProcessor, Owlv2ForObjectDetection
-from transformers.utils.constants import OPENAI_CLIP_MEAN, OPENAI_CLIP_STD
 
-from .owl_v2 import Owlv2ProcessorWithNMS
+from .object_segmentation_model import ImageSegmentationModel
+from .object_detection_model import ObjectDetectionModel
+from .utils import ImageRegion
 
-class ImageRegion:
-    def __init__(self, x1: int, y1: int, x2: int, y2: int, label: str, score: float):
-        self.x1 = x1
-        self.y1 = y1
-        self.x2 = x2
-        self.y2 = y2
-        self.label = label
-        self.score = score
 
 class ImageLoadedEvent(Event):
     image: ImageNode
-    segmentation_configuration: dict | None
-    object_detection_configuration: dict | None
+    bbox_list: Optional[list[ImageRegion]]
+    prompt: Optional[str]
+
 
 class BBoxCreatedEvent(Event):
     """
@@ -40,12 +31,9 @@ class BBoxCreatedEvent(Event):
 
     Attributes:
         image (ImageNode): The image associated with the bounding box.
-        segmentation_configuration (dict, optional): Configuration settings for image segmentation.
-        object_detection_configuration (dict, optional): Configuration settings for object detection.
     """
     image: ImageNode
-    segmentation_configuration: dict | None
-    object_detection_configuration: dict | None
+    bbox_list: list[ImageRegion]
 
 
 class ImageParsedEvent(Event):
@@ -58,16 +46,6 @@ class ImageParsedEvent(Event):
     """
     source: ImageNode
     chunks: list[ImageNode]
-
-
-class ImageChunkGenerated(Event):
-    """
-    Event triggered when an image chunk is generated.
-
-    Attributes:
-        image_node (ImageNode): The image node representing the generated chunk.
-    """
-    image_node: ImageNode
 
 
 class ImageNodeParserWorkflow(Workflow):
@@ -86,54 +64,9 @@ class ImageNodeParserWorkflow(Workflow):
         model (Optional[Owlv2ForObjectDetection]): The object detection model.
     """
 
-    _default_predictor_configuration = {
-        "model_name": "facebook/sam2-hiera-small",
-        "sam_settings": {}
-        # "settings": {
-        #     "points_per_side": 32,
-        #     "points_per_batch": 128,
-        #     "pred_iou_thresh": 0.7,
-        #     "stability_score_thresh": 0.92,
-        #     "stability_score_offset": 0.7,
-        #     "crop_n_layers": 1,
-        #     "box_nms_thresh": 0.7,
-        #     "crop_n_points_downscale_factor": 2,
-        #     "min_mask_region_area": 25.0,
-        #     "use_m2m": True,
-        #     "device_map": "cpu"
-        # }
-    },
-
-    _object_detection_configuration = dict(
-        confidence=0.1,
-        nms_threshold=0.3
-    )
-
     multi_modal_llm: Optional[MultiModalLLM] = None
-    processor: Optional[AutoProcessor] = None
-    model: Optional[Owlv2ForObjectDetection] = None
-
-    def get_or_create_owl_v2(self) -> Owlv2ForObjectDetection:
-        """
-        Retrieves or creates an instance of the Owlv2ForObjectDetection model.
-
-        Returns:
-            Owlv2ForObjectDetection: The object detection model instance.
-        """
-        if self.model is None:
-            self.model = Owlv2ForObjectDetection.from_pretrained("google/owlv2-large-patch14-ensemble")
-        return self.model
-    
-    def get_or_create_owl_v2_processor(self) -> AutoProcessor:
-        """
-        Retrieves or creates an instance of the Owlv2ProcessorWithNMS processor.
-
-        Returns:
-            AutoProcessor: The processor instance for handling image processing.
-        """
-        if self.processor is None:
-            self.processor = Owlv2ProcessorWithNMS.from_pretrained("google/owlv2-large-patch14-ensemble")
-        return self.processor
+    object_detection_model: Optional[ObjectDetectionModel] = None
+    image_segmentation_model: Optional[ImageSegmentationModel] = None
 
     @step()
     async def load_image(self, start_event: StartEvent) -> ImageLoadedEvent | StopEvent:
@@ -150,24 +83,28 @@ class ImageNodeParserWorkflow(Workflow):
         Raises:
             ValueError: If no image is provided.
         """
-        sam_configuration = self._default_predictor_configuration
-        object_detection_configuration = self._object_detection_configuration
-        if hasattr(start_event, "segmentation_configuration") and start_event.segmentation_configuration is not None:
-            sam_configuration = start_event.segmentation_configuration
+
+        bbox_list = start_event.get("bbox_list", None)
+        prompt = start_event.get("prompt", None)
+
+        image_document: ImageNode = None
+
         if hasattr(start_event, "image") and start_event.image is not None and isinstance(start_event.image, ImageNode):
-            return ImageLoadedEvent(image=start_event.image, segmentation_configuration=sam_configuration)
+            image_document = start_event.image
+        elif hasattr(start_event, "image") and start_event.image is not None and isinstance(start_event.image, ImageDocument):
+            image_document = start_event.image
         elif hasattr(start_event, "base64_image") and start_event.base64_image is not None:
-            document = ImageDocument(image=start_event.base64_image, mimetype=start_event.mimetype, image_mimetype=start_event.mimetype)
-            return ImageLoadedEvent(image=document, segmentation_configuration=sam_configuration)
+            image_document = ImageDocument(image=start_event.base64_image, mimetype=start_event.mimetype, image_mimetype=start_event.mimetype)
         elif hasattr(start_event, "image_path") and start_event.image_path is not None:
             image = Image.open(start_event.image_path).convert("RGB")
-            document = ImageDocument(image=self.image_to_base64(image), mimetype="image/jpg", image_mimetype="image/jpg")
-            return ImageLoadedEvent(image=document, segmentation_configuration=sam_configuration, object_detection_configuration=object_detection_configuration)
+            image_document = ImageDocument(image=self.image_to_base64(image), mimetype="image/jpg", image_mimetype="image/jpg")
         else:
             return StopEvent()
         
+        return ImageLoadedEvent(image=image_document, bbox_list=bbox_list, prompt=prompt)
+        
     @step()
-    async def create_bboxes(self, image_laoded_event: ImageLoadedEvent) -> BBoxCreatedEvent:
+    async def create_bboxes(self, image_loaded_event: ImageLoadedEvent) -> BBoxCreatedEvent:
         """
         Create bounding boxes for the image based on the segmentation configuration.
 
@@ -179,28 +116,25 @@ class ImageNodeParserWorkflow(Workflow):
             StopEvent: If bounding box creation fails due to an error.
         """
         try:
-            if 'bbox_list' not in image_laoded_event.segmentation_configuration:
-                if 'prompt' not in image_laoded_event.segmentation_configuration:
+            bbox_list = image_loaded_event.bbox_list
+            if bbox_list is None:
+                prompt = image_loaded_event.prompt
+                if prompt is None:
                     prompt = self.multi_modal_llm.complete(
                         "Find the most important entities in the image and produce a list of short prompts to use for an object detection model. Put each single prompt on a new line. Emit only the prompts.",
-                        [image_laoded_event.image]
-                    )
-                    image_laoded_event.segmentation_configuration["prompt"] = prompt.text
+                        [image_loaded_event.image]
+                    ).text
                 
-                bbox_list = self._detect_bboxes_with_owlv2(
-                    image_laoded_event.image,
-                    image_laoded_event.segmentation_configuration['prompt'],
-                    image_laoded_event.object_detection_configuration.get("confidence", 0.1),
-                    image_laoded_event.object_detection_configuration.get("nms_threshold", 0.3)
+                bbox_list = self.object_detection_model.detect_bboxes(
+                    image_loaded_event.image,
+                    prompt=prompt,
                 )
 
-                image_laoded_event.segmentation_configuration["bbox_list"] = bbox_list
-
-            return BBoxCreatedEvent(image=image_laoded_event.image, segmentation_configuration=image_laoded_event.segmentation_configuration)
+            return BBoxCreatedEvent(image=image_loaded_event.image, bbox_list=bbox_list)
                 
         except Exception as e:
             logging.error(f"Failed to create bounding boxes: {e}", exc_info=True)
-            return StopEvent(reason="Bounding box creation failed due to an error.")
+            return StopEvent(result="Bounding box creation failed due to an error.")
 
 
     @step()
@@ -216,17 +150,19 @@ class ImageNodeParserWorkflow(Workflow):
             StopEvent: If no chunks are generated.
         """
         parsed: list[ImageNode] = []
+        image = bounding_boxes_created_event.image
+        bbox_list = bounding_boxes_created_event.bbox_list
 
-        parsed = self._parse_image_node_with_sam2(bounding_boxes_created_event.image, bounding_boxes_created_event.segmentation_configuration)
+        parsed = self.image_segmentation_model.segment_image(image, bbox_list)
 
         if len(parsed) == 0:
             result = {
-                "source": bounding_boxes_created_event.image,
+                "source": image,
                 "chunks": []
             }
             return StopEvent(result=result)
         else:
-            return ImageParsedEvent(source=bounding_boxes_created_event.image, chunks=parsed)
+            return ImageParsedEvent(source=image, chunks=parsed)
         
     @step()
     async def describe_image(self, image_parsed_event: ImageParsedEvent) -> StopEvent:
@@ -284,81 +220,6 @@ class ImageNodeParserWorkflow(Workflow):
 
         return StopEvent(result=result)
 
-    def _detect_bboxes_with_owlv2(self, image_node: ImageNode, prompt: str, confidence: float, nms_threshold: float) -> list[ImageRegion]:
-        """
-        Detects bounding boxes in the image using the Owlv2 model.
-
-        Args:
-            image_node (ImageNode): The image node to process.
-            prompt (str): The prompt for the object detection model.
-            confidence (float): The confidence threshold for detections.
-            nms_threshold (float): The non-maximum suppression threshold.
-
-        Returns:
-            list[ImageRegion]: A list of detected bounding boxes with their associated labels and scores.
-        """
-        image = Image.open(image_node.resolve_image()).convert("RGB")
-        processor = self.get_or_create_owl_v2_processor()
-        model = self.get_or_create_owl_v2()
-
-        texts = [[x.strip() for x in prompt.split("\n")]]
-        inputs = processor(text=texts, images=image, return_tensors="pt")
-
-        with torch.no_grad():
-            outputs = model(**inputs)
-
-        def get_preprocessed_image(pixel_values):
-            # Step 1: Remove the batch dimension from pixel_values and convert to numpy array
-            pixel_values = pixel_values.squeeze().numpy()
-            
-            # Step 2: Unnormalize the image by applying the inverse of CLIP's normalization
-            # Multiply by standard deviation and add mean
-            unnormalized_image = (pixel_values * np.array(OPENAI_CLIP_STD)[:, None, None]) + np.array(OPENAI_CLIP_MEAN)[:, None, None]
-            
-            # Step 3: Scale the pixel values to 0-255 range and convert to 8-bit unsigned integer
-            unnormalized_image = (unnormalized_image * 255).astype(np.uint8)
-            
-            # Step 4: Rearrange the color channel axis from first to last (CHW to HWC)
-            unnormalized_image = np.moveaxis(unnormalized_image, 0, -1)
-            
-            # Step 5: Convert the numpy array to a PIL Image object
-            unnormalized_image = Image.fromarray(unnormalized_image)
-            return unnormalized_image
-
-        unnormalized_image = get_preprocessed_image(inputs.pixel_values)
-
-        target_sizes = torch.Tensor([unnormalized_image.size[::-1]])
-        
-        results = processor.post_process_object_detection_with_nms(
-            outputs=outputs, threshold=confidence, nms_threshold=nms_threshold, target_sizes=target_sizes
-        )
-
-        i = 0
-        text = texts[i]
-        boxes, scores, labels = results[i]["boxes"], results[i]["scores"], results[i]["labels"]
-
-        # Initialize an empty list to store ImageRegion objects
-        annotations: list[ImageRegion] = [] 
-        
-        # Iterate through the detected boxes, scores, and labels
-        for box, score, label in zip(boxes, scores, labels):
-            # Round the box coordinates to 2 decimal places
-            box = [round(i, 2) for i in box.tolist()]
-            
-            # Print detection information for debugging
-            print(f"Detected {text[label]} with confidence {round(score.item(), 3)} at location {box}")
-            
-            # Unpack the box coordinates
-            x1, y1, x2, y2 = box
-            
-            # Create an ImageRegion object with the detection information
-            image_region = ImageRegion(x1, y1, x2, y2, label, score)
-            
-            # Add the ImageRegion to the annotations list
-            annotations.append(image_region)
-    
-        return annotations
-
     def _parse_image_node_with_sam2(self, image_node: ImageNode, configuration: dict) -> list[ImageNode]:
         """
         Parses an image node by cropping it into smaller image chunks based on the provided annotations.
@@ -408,8 +269,6 @@ class ImageNodeParserWorkflow(Workflow):
                     image_chunk.relationships[NodeRelationship.PARENT] = image_node.as_related_node_info()
                     # Append the created image chunk to the list
                     image_chunks.append(image_chunk)
-                    # Send an event indicating that an image chunk has been generated
-                    self.send_event(ImageChunkGenerated(image_node=image_chunk))
                 except Exception as e:
                     # Handle any exceptions by sending a workflow runtime error event
                     self.send_event(WorkflowRuntimeError(e))
