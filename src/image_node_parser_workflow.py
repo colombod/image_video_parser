@@ -16,7 +16,7 @@ import torch
 
 from .object_segmentation_model import ImageSegmentationModel
 from .object_detection_model import ObjectDetectionModel
-from .utils import ImageRegion
+from .utils import image_to_base64, ref_doc_id, ImageRegion
 
 
 class ImageLoadedEvent(Event):
@@ -97,7 +97,7 @@ class ImageNodeParserWorkflow(Workflow):
             image_document = ImageDocument(image=start_event.base64_image, mimetype=start_event.mimetype, image_mimetype=start_event.mimetype)
         elif hasattr(start_event, "image_path") and start_event.image_path is not None:
             image = Image.open(start_event.image_path).convert("RGB")
-            image_document = ImageDocument(image=self.image_to_base64(image), mimetype="image/jpg", image_mimetype="image/jpg")
+            image_document = ImageDocument(image=image_to_base64(image), mimetype="image/jpg", image_mimetype="image/jpg")
         else:
             return StopEvent()
         
@@ -203,7 +203,7 @@ class ImageNodeParserWorkflow(Workflow):
                         mimetype="text/plain"
                     )
                     # Establish a relationship between the description node and the source image node
-                    image_description_node.relationships[NodeRelationship.SOURCE] = self._ref_doc_id(image_parsed_event.source)
+                    image_description_node.relationships[NodeRelationship.SOURCE] = ref_doc_id(image_parsed_event.source)
                     # Establish a parent relationship to the current image chunk
                     image_description_node.relationships[NodeRelationship.PARENT] = image_chunk.as_related_node_info()
                     # Append the description node to the list of image descriptions
@@ -264,8 +264,8 @@ class ImageNodeParserWorkflow(Workflow):
                 metadata = dict(region=region)
                 try:
                     # Create an ImageNode from the cropped image and set its relationships
-                    image_chunk = ImageNode(image=self.image_to_base64(cropped_image), mimetype=image_node.mimetype, metadata=metadata)
-                    image_chunk.relationships[NodeRelationship.SOURCE] = self._ref_doc_id(image_node)
+                    image_chunk = ImageNode(image=image_to_base64(cropped_image), mimetype=image_node.mimetype, metadata=metadata)
+                    image_chunk.relationships[NodeRelationship.SOURCE] = ref_doc_id(image_node)
                     image_chunk.relationships[NodeRelationship.PARENT] = image_node.as_related_node_info()
                     # Append the created image chunk to the list
                     image_chunks.append(image_chunk)
@@ -278,34 +278,3 @@ class ImageNodeParserWorkflow(Workflow):
         image_node.relationships[NodeRelationship.CHILD] = children_collection + [c.as_related_node_info() for c in image_chunks[1:]]
         
         return image_chunks
-
-    def _ref_doc_id(self, node: BaseNode) -> RelatedNodeInfo:
-        """
-        Returns the related node information of the document for the given ImageNode.
-
-        Args:
-            node (ImageNode): The ImageNode for which to retrieve the related node information.
-
-        Returns:
-            RelatedNodeInfo: The related node information for the given ImageNode.
-        """
-        source_node = node.source_node
-        if source_node is None:
-            return node.as_related_node_info()
-        return source_node
-    
-    def image_to_base64(self, pil_image, format="JPEG"):
-        """
-        Converts a PIL image to base64 string.
-
-        Args:
-            pil_image (PIL.Image.Image): The PIL image object to be converted.
-            format (str, optional): The format of the image. Defaults to "JPEG".
-
-        Returns:
-            str: The base64 encoded string representation of the image.
-        """
-        buffered = BytesIO()
-        pil_image.save(buffered, format=format)
-        image_str = base64.b64encode(buffered.getvalue())
-        return image_str.decode('utf-8')  # Convert bytes to string
