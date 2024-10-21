@@ -39,21 +39,27 @@ class ImageRegion:
         self.label = label
         self.score = score
 
-def get_source_ref_node_info(node: BaseNode) -> RelatedNodeInfo:
+def try_get_source_ref_node_info(node: BaseNode) -> RelatedNodeInfo:
     """
-    Returns the related node information of the document for the given ImageNode.
+    Retrieves the RelatedNodeInfo for the source of the given node.
+
+    This function attempts to get the source node of the input node. If the source node
+    exists, it returns its RelatedNodeInfo. Otherwise, it returns the RelatedNodeInfo
+    of the input node itself.
 
     Args:
-        node (ImageNode): The ImageNode for which to retrieve the related node information.
+        node (BaseNode): The node for which to retrieve the source reference information.
 
     Returns:
-        RelatedNodeInfo: The related node information for the given ImageNode.
+        RelatedNodeInfo: The RelatedNodeInfo of the source node if it exists,
+                         otherwise the RelatedNodeInfo of the input node.
     """
+ 
 
     source_node = node.source_node
     if source_node is None:
         return node.as_related_node_info()
-    return source_node
+    return source_node.as_related_node_info()
 
 def image_to_base64(pil_image: Image, format="JPEG") -> str:
     """

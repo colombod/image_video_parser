@@ -5,7 +5,7 @@ import numpy as np
 from PIL import Image
 from llama_index.core.schema import ImageNode
 
-from .utils import image_to_base64, get_source_ref_node_info, ImageRegion
+from .utils import image_to_base64, try_get_source_ref_node_info, ImageRegion
 from sam2.automatic_mask_generator import SAM2ImagePredictor
 from llama_index.core.schema import ImageNode, NodeRelationship
 
@@ -97,7 +97,7 @@ class SamForImageSegmentation(ImageSegmentationModel):
 
                 # Create an ImageNode from the cropped image and set its relationships
                 image_chunk = ImageNode(image=image_to_base64(cropped_image), mimetype=image_node.mimetype, metadata=metadata)
-                image_chunk.relationships[NodeRelationship.SOURCE] = get_source_ref_node_info(image_node)
+                image_chunk.relationships[NodeRelationship.SOURCE] = try_get_source_ref_node_info(image_node)
                 image_chunk.relationships[NodeRelationship.PARENT] = image_node.as_related_node_info()
                 # Append the created image chunk to the list
                 image_chunks.append(image_chunk)
