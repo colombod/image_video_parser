@@ -16,10 +16,21 @@ import torch
 
 from .object_segmentation_model import ImageSegmentationModel
 from .object_detection_model import ObjectDetectionModel
-from .utils import image_to_base64, ref_doc_id, ImageRegion
+from .utils import image_to_base64, get_source_ref_node_info, ImageRegion
 
 
 class ImageLoadedEvent(Event):
+    """
+    Event triggered when an image is successfully loaded.
+
+    This event carries information about the loaded image, including optional
+    bounding box information and a prompt.
+
+    Attributes:
+        image (ImageNode): The loaded image node.
+        bbox_list (Optional[list[ImageRegion]]): A list of bounding boxes associated with the image, if any.
+        prompt (Optional[str]): An optional prompt associated with the image.
+    """
     image: ImageNode
     bbox_list: Optional[list[ImageRegion]]
     prompt: Optional[str]
@@ -203,7 +214,7 @@ class ImageNodeParserWorkflow(Workflow):
                         mimetype="text/plain"
                     )
                     # Establish a relationship between the description node and the source image node
-                    image_description_node.relationships[NodeRelationship.SOURCE] = ref_doc_id(image_parsed_event.source)
+                    image_description_node.relationships[NodeRelationship.SOURCE] = get_source_ref_node_info(image_parsed_event.source)
                     # Establish a parent relationship to the current image chunk
                     image_description_node.relationships[NodeRelationship.PARENT] = image_chunk.as_related_node_info()
                     # Append the description node to the list of image descriptions
@@ -265,7 +276,7 @@ class ImageNodeParserWorkflow(Workflow):
                 try:
                     # Create an ImageNode from the cropped image and set its relationships
                     image_chunk = ImageNode(image=image_to_base64(cropped_image), mimetype=image_node.mimetype, metadata=metadata)
-                    image_chunk.relationships[NodeRelationship.SOURCE] = ref_doc_id(image_node)
+                    image_chunk.relationships[NodeRelationship.SOURCE] = get_source_ref_node_info(image_node)
                     image_chunk.relationships[NodeRelationship.PARENT] = image_node.as_related_node_info()
                     # Append the created image chunk to the list
                     image_chunks.append(image_chunk)
