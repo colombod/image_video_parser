@@ -31,9 +31,9 @@ async def main():
     workflow.multi_modal_llm = azure_openai_mm_llm
     # workflow.object_detection_model = Florence2ForObjectDetectionModel(save_cropped_images=True)
     workflow.object_detection_model = OwlV2ObjectDetectionModel(save_cropped_images=True)
-    workflow.image_segmentation_model = SamForImageSegmentation(model_name="facebook/sam2-hiera-small")
+    workflow.image_segmentation_model = SamForImageSegmentation(model_name="facebook/sam2.1-hiera-large")
     
-    result = await workflow.run(image_path="./images/ikea.png", prompt="all chairs")
+    result = await workflow.run(image_path="./images/il_vulcano_3.png", prompt="music instruments and guitars")
 
     if isinstance(result, str):
         print(result)

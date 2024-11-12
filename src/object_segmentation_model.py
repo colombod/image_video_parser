@@ -6,7 +6,7 @@ from PIL import Image
 from llama_index.core.schema import ImageNode
 
 from .utils import image_to_base64, try_get_source_ref_node_info, ImageRegion
-from sam2.automatic_mask_generator import SAM2ImagePredictor
+from sam2.sam2_image_predictor import SAM2ImagePredictor
 from llama_index.core.schema import ImageNode, NodeRelationship
 
 class ImageSegmentationModel(abc.ABC):

@@ -45,7 +45,7 @@ class OwlV2ObjectDetectionModel(ObjectDetectionModel):
             Owlv2ForObjectDetection: The object detection model instance.
         """
         if self._model is None:
-            self._model = Owlv2ForObjectDetection.from_pretrained("google/owlv2-large-patch14-ensemble", device_map=self._device).eval()
+            self._model = Owlv2ForObjectDetection.from_pretrained("google/owlv2-base-patch16-ensemble", device_map=self._device).eval()
         return self._model
     
     def _get_or_create_owl_v2_processor(self) -> AutoProcessor:
@@ -56,10 +56,10 @@ class OwlV2ObjectDetectionModel(ObjectDetectionModel):
             AutoProcessor: The processor instance for handling image processing.
         """
         if self._processor is None:
-            self._processor = Owlv2ProcessorWithNMS.from_pretrained("google/owlv2-large-patch14-ensemble")
+            self._processor = Owlv2ProcessorWithNMS.from_pretrained("google/owlv2-base-patch16-ensemble")
         return self._processor
 
-    def detect_bboxes(self, image_node: ImageNode, prompt: str, **kwargs) -> list[ImageRegion]:
+    def detect_bboxes(self, image_node: ImageNode, prompt: str, score_threshold: float = 0.1, **kwargs) -> list[ImageRegion]:
         """
         Detects bounding boxes in the image using the Owlv2 model.
 
@@ -77,51 +77,61 @@ class OwlV2ObjectDetectionModel(ObjectDetectionModel):
         model = self._get_or_create_owl_v2()
 
         texts = [[x.strip() for x in prompt.split("\n")]]
-        inputs = processor(text=texts, images=image, return_tensors="pt")
+        inputs = processor(text=texts, images=image, return_tensors="pt").to(self._device)
 
         with torch.no_grad():
             outputs = model(**inputs)
 
-        def get_preprocessed_image(pixel_values):
-            # Step 1: Remove the batch dimension from pixel_values and convert to numpy array
-            pixel_values = pixel_values.squeeze().numpy()
+        # def get_preprocessed_image(pixel_values):
+        #     # Step 1: Remove the batch dimension from pixel_values and convert to numpy array
+        #     pixel_values = pixel_values.squeeze().numpy()
             
-            # Step 2: Unnormalize the image by applying the inverse of CLIP's normalization
-            # Multiply by standard deviation and add mean
-            unnormalized_image = (pixel_values * np.array(OPENAI_CLIP_STD)[:, None, None]) + np.array(OPENAI_CLIP_MEAN)[:, None, None]
+        #     # Step 2: Unnormalize the image by applying the inverse of CLIP's normalization
+        #     # Multiply by standard deviation and add mean
+        #     unnormalized_image = (pixel_values * np.array(OPENAI_CLIP_STD)[:, None, None]) + np.array(OPENAI_CLIP_MEAN)[:, None, None]
             
-            # Step 3: Scale the pixel values to 0-255 range and convert to 8-bit unsigned integer
-            unnormalized_image = (unnormalized_image * 255).astype(np.uint8)
+        #     # Step 3: Scale the pixel values to 0-255 range and convert to 8-bit unsigned integer
+        #     unnormalized_image = (unnormalized_image * 255).astype(np.uint8)
             
-            # Step 4: Rearrange the color channel axis from first to last (CHW to HWC)
-            unnormalized_image = np.moveaxis(unnormalized_image, 0, -1)
+        #     # Step 4: Rearrange the color channel axis from first to last (CHW to HWC)
+        #     unnormalized_image = np.moveaxis(unnormalized_image, 0, -1)
             
-            # Step 5: Convert the numpy array to a PIL Image object
-            unnormalized_image = Image.fromarray(unnormalized_image)
-            return unnormalized_image
+        #     # Step 5: Convert the numpy array to a PIL Image object
+        #     unnormalized_image = Image.fromarray(unnormalized_image)
+        #     return unnormalized_image
 
-        unnormalized_image = get_preprocessed_image(inputs.pixel_values)
+        # unnormalized_image = get_preprocessed_image(inputs.pixel_values)
 
-        target_sizes = torch.Tensor([unnormalized_image.size[::-1]])
+        # target_sizes = torch.Tensor([unnormalized_image.size[::-1]])
         
-        results = processor.post_process_object_detection_with_nms(
-            outputs=outputs, threshold=self._confidence, nms_threshold=self._nms_threshold, target_sizes=target_sizes
-        )
+        # results = processor.post_process_object_detection_with_nms(
+        #     outputs=outputs, threshold=self._confidence, nms_threshold=self._nms_threshold, target_sizes=target_sizes
+        # )
 
-        i = 0
-        text = texts[i]
-        boxes, scores, labels = results[i]["boxes"], results[i]["scores"], results[i]["labels"]
+        # i = 0
+        # text = texts[i]
+        # boxes, scores, labels = results[i]["boxes"], results[i]["scores"], results[i]["labels"]
+
+        size = max(image.size[:2])
+        target_sizes = torch.Tensor([[size, size]])
+
+        outputs.logits = outputs.logits.cpu()
+        outputs.pred_boxes = outputs.pred_boxes.cpu()
+        results = processor.post_process_object_detection(outputs=outputs, target_sizes=target_sizes)
+        boxes, scores, labels = results[0]["boxes"], results[0]["scores"], results[0]["labels"]
 
         # Initialize an empty list to store ImageRegion objects
         annotations: list[ImageRegion] = [] 
-        
         # Iterate through the detected boxes, scores, and labels
         for box, score, label in zip(boxes, scores, labels):
-            # Round the box coordinates to 2 decimal places
-            box = [round(i, 2) for i in box.tolist()]
-            
+            box = [int(i) for i in box.tolist()]
+
             # Print detection information for debugging
-            print(f"Detected {text[label]} with confidence {round(score.item(), 3)} at location {box}")
+            print(f"Detected {texts[label]} with confidence {round(score.item(), 3)} at location {box}")
+            
+            # Skip detections with scores below the threshold
+            if score < score_threshold:
+                continue
             
             # Unpack the box coordinates
             x1, y1, x2, y2 = box
