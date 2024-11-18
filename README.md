@@ -44,5 +44,8 @@ You can find pre-computed examples in the `examples` folder.
 
 ### Segmented Outputs
 
-| ![Segment 1](./examples/diablo_menu/210b93b3-da14-4dfc-b6b2-7e2dfb7d68ad.png) | ![Segment 2](./examples/diablo_menu/f378cb83-848a-4233-80a1-63c01285379b.png) | 
-| ![Segment 3](./examples/diablo_menu/696989f5-0e5a-471e-8c99-524cce33285b.png) | ![Segment 4](./examples/diablo_menu/3991caef-ffb4-4341-9500-911843e529c9.png) |
+ ![Segment 1](./examples/diablo_menu/210b93b3-da14-4dfc-b6b2-7e2dfb7d68ad.png) | ![Segment 2](./examples/diablo_menu/f378cb83-848a-4233-80a1-63c01285379b.png) 
+-----------|-----------
+![Segment 3](./examples/diablo_menu/696989f5-0e5a-471e-8c99-524cce33285b.png) | ![Segment 4](./examples/diablo_menu/3991caef-ffb4-4341-9500-911843e529c9.png) 
+
+
