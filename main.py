@@ -17,6 +17,8 @@ async def main():
     # remove the ./output folder
     shutil.rmtree("./output", ignore_errors=True)
     shutil.os.mkdir("./output")
+    shutil.os.mkdir("./output/cropped_images")
+    shutil.os.mkdir("./output/segmented_images")
     
     azure_openai_mm_llm = AzureOpenAIMultiModal(
         azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
@@ -30,10 +32,11 @@ async def main():
     workflow = ImageNodeParserWorkflow(verbose=True)
     workflow.multi_modal_llm = azure_openai_mm_llm
     # workflow.object_detection_model = Florence2ForObjectDetectionModel(save_cropped_images=True)
-    workflow.object_detection_model = OwlV2ObjectDetectionModel(save_cropped_images=True)
+    workflow.object_detection_model = OwlV2ObjectDetectionModel(save_cropped_images=True, output_dir="./output/cropped_images")
     workflow.image_segmentation_model = SamForImageSegmentation(model_name="facebook/sam2.1-hiera-large")
     
-    result = await workflow.run(image_path="./images/il_vulcano_3.png", prompt="music instruments and guitars")
+    # result = await workflow.run(image_path="./images/ikea.png", prompt="all the chairs")
+    result = await workflow.run(image_path="./images/diablo_menu.png")
 
     if isinstance(result, str):
         print(result)
@@ -41,7 +44,7 @@ async def main():
 
     for chunk in result["chunks"]:
         if isinstance(chunk, ImageNode):
-            Image.open(chunk.resolve_image()).save(f"./output/{chunk.node_id}.png")
+            Image.open(chunk.resolve_image()).save(f"./output/segmented_images/{chunk.node_id}.png")
 
 if __name__ == "__main__":
     asyncio.run(main())

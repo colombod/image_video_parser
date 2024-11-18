@@ -83,8 +83,10 @@ class SamForImageSegmentation(ImageSegmentationModel):
             for ann, bbox in zip(annotations, bbox_list):
                 # Extract the coordinates of the bounding box
                 box = bbox.x1, bbox.y1, bbox.x2, bbox.y2
+                # Find the index of the best mask in the annotation array
+                best_mask_idx = ann[1].argmax().item()
                 # Create a mask from the annotation array
-                mask = Image.fromarray((ann[0][0] * 255).astype(np.uint8))
+                mask = Image.fromarray((ann[0][best_mask_idx] * 255).astype(np.uint8))
                 # Composite the original image with a new RGB image using the mask
                 masked_image = Image.composite(img, Image.new("RGB", img.size), mask)
                 # Crop the masked image to the bounding box dimensions

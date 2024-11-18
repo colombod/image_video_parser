@@ -117,7 +117,8 @@ class OwlV2ObjectDetectionModel(ObjectDetectionModel):
 
         outputs.logits = outputs.logits.cpu()
         outputs.pred_boxes = outputs.pred_boxes.cpu()
-        results = processor.post_process_object_detection(outputs=outputs, target_sizes=target_sizes)
+        results = processor.post_process_object_detection_with_nms(outputs=outputs, target_sizes=target_sizes, threshold=self._confidence, nms_threshold=self._nms_threshold)
+        # results = processor.post_process_object_detection(outputs=outputs, target_sizes=target_sizes)
         boxes, scores, labels = results[0]["boxes"], results[0]["scores"], results[0]["labels"]
 
         # Initialize an empty list to store ImageRegion objects
@@ -125,9 +126,6 @@ class OwlV2ObjectDetectionModel(ObjectDetectionModel):
         # Iterate through the detected boxes, scores, and labels
         for box, score, label in zip(boxes, scores, labels):
             box = [int(i) for i in box.tolist()]
-
-            # Print detection information for debugging
-            print(f"Detected {texts[label]} with confidence {round(score.item(), 3)} at location {box}")
             
             # Skip detections with scores below the threshold
             if score < score_threshold:

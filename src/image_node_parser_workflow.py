@@ -1,5 +1,4 @@
-from io import BytesIO
-from llama_index.core.schema import ImageDocument, ImageNode, NodeRelationship, RelatedNodeInfo, BaseNode, TextNode
+from llama_index.core.schema import ImageDocument, ImageNode, NodeRelationship, TextNode
 from llama_index.core.workflow import Event, StartEvent, StopEvent, Workflow, step
 from llama_index.core.workflow.errors import WorkflowRuntimeError
 from llama_index.core.multi_modal_llms import MultiModalLLM
@@ -7,7 +6,6 @@ import logging
 from PIL import Image
 from sam2.automatic_mask_generator import SAM2ImagePredictor
 from typing import Optional
-import base64
 import numpy as np
 import torch
 from PIL import Image
@@ -132,7 +130,7 @@ class ImageNodeParserWorkflow(Workflow):
                 prompt = image_loaded_event.prompt
                 if prompt is None:
                     prompt = self.multi_modal_llm.complete(
-                        "Find the most important entities in the image and produce a list of short prompts to use for an object detection model. Put each single prompt on a new line. Emit only the prompts.",
+                        "Find the most important entities (10 maximum) in the image and produce a list of short prompts to use for an object detection model. Give priorities to people, foreground elements, animals. Put each single prompt on a new line. Emit only the prompts without any punctuation.",
                         [image_loaded_event.image]
                     ).text
                 
