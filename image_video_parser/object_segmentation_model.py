@@ -3,15 +3,14 @@ from typing import Optional
 import torch
 import numpy as np
 from PIL import Image
-from llama_index.core.schema import ImageNode
 
 from .utils import image_to_base64, try_get_source_ref_node_info, ImageRegion
 from sam2.sam2_image_predictor import SAM2ImagePredictor
-from llama_index.core.schema import ImageNode, NodeRelationship
+from llama_index.core.schema import ImageDocument, NodeRelationship
 
 class ImageSegmentationModel(abc.ABC):
     @abc.abstractmethod
-    def segment_image(self, image_node: ImageNode, **kwargs) -> list[ImageRegion]:
+    def segment_image(self, image_node: ImageDocument, **kwargs) -> list[ImageRegion]:
         pass
 
 
@@ -50,26 +49,26 @@ class SamForImageSegmentation(ImageSegmentationModel):
             Owlv2ForObjectDetection: The object detection model instance.
         """
         if self._model is None:
-            self._model = SAM2ImagePredictor.from_pretrained(self._model_name, device_map=self._device) #, **self._default_configuration)
+            self._model = SAM2ImagePredictor.from_pretrained(self._model_name, device_map=self._device, device=self._device) #, **self._default_configuration)
         return self._model
 
 
-    def segment_image(self, image_node: ImageNode, bbox_list: list[ImageRegion] = None) -> list[ImageNode]:
+    def segment_image(self, image_node: ImageDocument, bbox_list: list[ImageRegion] = None) -> list[ImageDocument]:
         """
         Parses an image node by cropping it into smaller image chunks based on the provided annotations.
 
         Args:
-            image_node (ImageNode): The image node to be parsed.
+            image_node (Node): The image node to be parsed.
             configuration (dict): The configuration containing bounding box annotations.
 
         Returns:
-            list[ImageNode]: A list of image chunks generated from the cropping process.
+            list[Node]: A list of image chunks generated from the cropping process.
         """
         img = Image.open(image_node.resolve_image()).convert("RGB")
 
         predictor = self._get_or_create_sam2()
 
-        with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+        with torch.inference_mode(), torch.autocast("mps", dtype=torch.bfloat16):
             predictor.set_image(img)
                 
             annotations = []
@@ -78,7 +77,7 @@ class SamForImageSegmentation(ImageSegmentationModel):
                 annotations.append(predictor.predict(box=(x1, y1, x2, y2)))
 
             # Initialize a list to hold the generated image chunks
-            image_chunks: list[ImageNode] = []
+            image_chunks: list[Node] = []
             # Iterate over the annotations and corresponding bounding boxes
             for ann, bbox in zip(annotations, bbox_list):
                 # Extract the coordinates of the bounding box
@@ -98,7 +97,7 @@ class SamForImageSegmentation(ImageSegmentationModel):
                 metadata = dict(region=region)
 
                 # Create an ImageNode from the cropped image and set its relationships
-                image_chunk = ImageNode(image=image_to_base64(cropped_image), mimetype=image_node.mimetype, metadata=metadata)
+                image_chunk = ImageDocument(image=image_to_base64(cropped_image), image_mimetype=image_node.image_mimetype, metadata=metadata)
                 image_chunk.relationships[NodeRelationship.SOURCE] = try_get_source_ref_node_info(image_node)
                 image_chunk.relationships[NodeRelationship.PARENT] = image_node.as_related_node_info()
                 # Append the created image chunk to the list

@@ -3,7 +3,7 @@ from typing import Literal, Optional
 import torch
 import numpy as np
 from PIL import Image
-from llama_index.core.schema import ImageNode
+from llama_index.core.schema import ImageDocument
 from transformers import AutoProcessor, Owlv2ForObjectDetection, AutoProcessor, AutoModelForCausalLM
 from transformers.utils.constants import OPENAI_CLIP_MEAN, OPENAI_CLIP_STD
 
@@ -12,7 +12,7 @@ from .owl_v2 import Owlv2ProcessorWithNMS
 
 class ObjectDetectionModel(abc.ABC):
     @abc.abstractmethod
-    def detect_bboxes(self, image_node: ImageNode, **kwargs) -> list[ImageRegion]:
+    def detect_bboxes(self, image_node: ImageDocument, **kwargs) -> list[ImageRegion]:
         pass
 
 
@@ -59,12 +59,12 @@ class OwlV2ObjectDetectionModel(ObjectDetectionModel):
             self._processor = Owlv2ProcessorWithNMS.from_pretrained("google/owlv2-base-patch16-ensemble")
         return self._processor
 
-    def detect_bboxes(self, image_node: ImageNode, prompt: str, score_threshold: float = 0.1, **kwargs) -> list[ImageRegion]:
+    def detect_bboxes(self, image_node: ImageDocument, prompt: str, score_threshold: float = 0.1, **kwargs) -> list[ImageRegion]:
         """
         Detects bounding boxes in the image using the Owlv2 model.
 
         Args:
-            image_node (ImageNode): The image node to process.
+            image_node (ImageDocument): The image node to process.
             prompt (str): The prompt for the object detection model.
             confidence (float): The confidence threshold for detections.
             nms_threshold (float): The non-maximum suppression threshold.
@@ -221,12 +221,12 @@ class Florence2ForObjectDetectionModel(ObjectDetectionModel):
         return self._processor
 
     @torch.no_grad()
-    def detect_bboxes(self, image_node: ImageNode, prompt: str, **kwargs) -> list[ImageRegion]:
+    def detect_bboxes(self, image_node: ImageDocument, prompt: str, **kwargs) -> list[ImageRegion]:
         """
         Detects bounding boxes in the image using the Owlv2 model.
 
         Args:
-            image_node (ImageNode): The image node to process.
+            image_node (ImageDocument): The image node to process.
             prompt (str): The prompt for the object detection model.
             confidence (float): The confidence threshold for detections.
             nms_threshold (float): The non-maximum suppression threshold.

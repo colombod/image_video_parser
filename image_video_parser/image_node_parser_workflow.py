@@ -1,4 +1,4 @@
-from llama_index.core.schema import ImageDocument, ImageNode, NodeRelationship, TextNode
+from llama_index.core.schema import ImageDocument, NodeRelationship, TextNode
 from llama_index.core.workflow import Event, StartEvent, StopEvent, Workflow, step
 from llama_index.core.workflow.errors import WorkflowRuntimeError
 from llama_index.core.multi_modal_llms import MultiModalLLM
@@ -25,11 +25,11 @@ class ImageLoadedEvent(Event):
     bounding box information and a prompt.
 
     Attributes:
-        image (ImageNode): The loaded image node.
+        image (ImageDocument): The loaded image node.
         bbox_list (Optional[list[ImageRegion]]): A list of bounding boxes associated with the image, if any.
         prompt (Optional[str]): An optional prompt associated with the image.
     """
-    image: ImageNode
+    image: ImageDocument
     bbox_list: Optional[list[ImageRegion]]
     prompt: Optional[str]
 
@@ -39,9 +39,9 @@ class BBoxCreatedEvent(Event):
     Event triggered when a bounding box is created for an image.
 
     Attributes:
-        image (ImageNode): The image associated with the bounding box.
+        image (ImageDocument): The image associated with the bounding box.
     """
-    image: ImageNode
+    image: ImageDocument
     bbox_list: list[ImageRegion]
 
 
@@ -50,11 +50,11 @@ class ImageParsedEvent(Event):
     Event triggered when an image has been successfully parsed.
 
     Attributes:
-        source (ImageNode): The original image node that was parsed.
-        chunks (list[ImageNode]): A list of image nodes representing the parsed chunks of the original image.
+        source (ImageDocument): The original image node that was parsed.
+        chunks (list[ImageDocument]): A list of image nodes representing the parsed chunks of the original image.
     """
-    source: ImageNode
-    chunks: list[ImageNode]
+    source: ImageDocument
+    chunks: list[ImageDocument]
 
 
 class ImageNodeParserWorkflow(Workflow):
@@ -96,17 +96,17 @@ class ImageNodeParserWorkflow(Workflow):
         bbox_list = start_event.get("bbox_list", None)
         prompt = start_event.get("prompt", None)
 
-        image_document: ImageNode = None
+        image_document: ImageDocument = None
 
-        if hasattr(start_event, "image") and start_event.image is not None and isinstance(start_event.image, ImageNode):
-            image_document = start_event.image
-        elif hasattr(start_event, "image") and start_event.image is not None and isinstance(start_event.image, ImageDocument):
+        # if hasattr(start_event, "image") and start_event.image is not None and isinstance(start_event.image, Node):
+        #     image_document = start_event.image
+        if hasattr(start_event, "image") and start_event.image is not None and isinstance(start_event.image, ImageDocument):
             image_document = start_event.image
         elif hasattr(start_event, "base64_image") and start_event.base64_image is not None:
-            image_document = ImageDocument(image=start_event.base64_image, mimetype=start_event.mimetype, image_mimetype=start_event.mimetype)
+            image_document = ImageDocument(image=start_event.base64_image, image_mimetype=start_event.mimetype)
         elif hasattr(start_event, "image_path") and start_event.image_path is not None:
             image = Image.open(start_event.image_path).convert("RGB")
-            image_document = ImageDocument(image=image_to_base64(image), mimetype="image/jpg", image_mimetype="image/jpg")
+            image_document = ImageDocument(image=image_to_base64(image), image_mimetype="image/jpg")
         else:
             return StopEvent()
         
@@ -158,7 +158,7 @@ class ImageNodeParserWorkflow(Workflow):
             ImageParsedEvent: The event containing the parsed image chunks.
             StopEvent: If no chunks are generated.
         """
-        parsed: list[ImageNode] = []
+        parsed: list[ImageDocument] = []
         image = bounding_boxes_created_event.image
         bbox_list = bounding_boxes_created_event.bbox_list
 
@@ -201,8 +201,7 @@ class ImageNodeParserWorkflow(Workflow):
                         image_documents=[
                             ImageDocument(
                                 image=image_chunk.image,
-                                mimetype=image_chunk.mimetype,
-                                image_mimetype=image_chunk.mimetype
+                                image_mimetype=image_chunk.image_mimetype
                             )
                         ],
                     )
@@ -229,16 +228,16 @@ class ImageNodeParserWorkflow(Workflow):
 
         return StopEvent(result=result)
 
-    def _parse_image_node_with_sam2(self, image_node: ImageNode, configuration: dict) -> list[ImageNode]:
+    def _parse_image_node_with_sam2(self, image_node: ImageDocument, configuration: dict) -> list[ImageDocument]:
         """
         Parses an image node by cropping it into smaller image chunks based on the provided annotations.
 
         Args:
-            image_node (ImageNode): The image node to be parsed.
+            image_node (Node): The image node to be parsed.
             configuration (dict): The configuration containing bounding box annotations.
 
         Returns:
-            list[ImageNode]: A list of image chunks generated from the cropping process.
+            list[Node]: A list of image chunks generated from the cropping process.
         """
         img = Image.open(image_node.resolve_image()).convert("RGB")
 
@@ -273,7 +272,7 @@ class ImageNodeParserWorkflow(Workflow):
                 metadata = dict(region=region)
                 try:
                     # Create an ImageNode from the cropped image and set its relationships
-                    image_chunk = ImageNode(image=image_to_base64(cropped_image), mimetype=image_node.mimetype, metadata=metadata)
+                    image_chunk = ImageDocument(image=image_to_base64(cropped_image), image_mimetype=image_node.image_mimetype, metadata=metadata)
                     image_chunk.relationships[NodeRelationship.SOURCE] = try_get_source_ref_node_info(image_node)
                     image_chunk.relationships[NodeRelationship.PARENT] = image_node.as_related_node_info()
                     # Append the created image chunk to the list
