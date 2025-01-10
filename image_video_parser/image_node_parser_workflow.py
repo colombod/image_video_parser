@@ -14,7 +14,7 @@ import torch
 
 from .object_segmentation_model import ImageSegmentationModel
 from .object_detection_model import ObjectDetectionModel
-from .utils import image_to_base64, try_get_source_ref_node_info, ImageRegion
+from .utils import image_to_base64_string, try_get_source_ref_node_info, ImageRegion
 
 
 class ImageLoadedEvent(Event):
@@ -106,7 +106,7 @@ class ImageNodeParserWorkflow(Workflow):
             image_document = ImageDocument(image=start_event.base64_image, image_mimetype=start_event.mimetype)
         elif hasattr(start_event, "image_path") and start_event.image_path is not None:
             image = Image.open(start_event.image_path).convert("RGB")
-            image_document = ImageDocument(image=image_to_base64(image), image_mimetype="image/jpg")
+            image_document = ImageDocument(image=image_to_base64_string(image), image_mimetype="image/jpg")
         else:
             return StopEvent()
         
@@ -272,7 +272,7 @@ class ImageNodeParserWorkflow(Workflow):
                 metadata = dict(region=region)
                 try:
                     # Create an ImageNode from the cropped image and set its relationships
-                    image_chunk = ImageDocument(image=image_to_base64(cropped_image), image_mimetype=image_node.image_mimetype, metadata=metadata)
+                    image_chunk = ImageDocument(image=image_to_base64_string(cropped_image), image_mimetype=image_node.image_mimetype, metadata=metadata)
                     image_chunk.relationships[NodeRelationship.SOURCE] = try_get_source_ref_node_info(image_node)
                     image_chunk.relationships[NodeRelationship.PARENT] = image_node.as_related_node_info()
                     # Append the created image chunk to the list

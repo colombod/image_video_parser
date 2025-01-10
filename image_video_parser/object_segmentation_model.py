@@ -4,7 +4,7 @@ import torch
 import numpy as np
 from PIL import Image
 
-from .utils import image_to_base64, try_get_source_ref_node_info, ImageRegion
+from .utils import image_to_base64_string, try_get_source_ref_node_info, ImageRegion
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from llama_index.core.schema import ImageDocument, NodeRelationship
 
@@ -97,7 +97,7 @@ class SamForImageSegmentation(ImageSegmentationModel):
                 metadata = dict(region=region)
 
                 # Create an ImageNode from the cropped image and set its relationships
-                image_chunk = ImageDocument(image=image_to_base64(cropped_image), image_mimetype=image_node.image_mimetype, metadata=metadata)
+                image_chunk = ImageDocument(image=image_to_base64_string(cropped_image), image_mimetype=image_node.image_mimetype, metadata=metadata)
                 image_chunk.relationships[NodeRelationship.SOURCE] = try_get_source_ref_node_info(image_node)
                 image_chunk.relationships[NodeRelationship.PARENT] = image_node.as_related_node_info()
                 # Append the created image chunk to the list
