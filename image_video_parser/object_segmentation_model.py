@@ -68,7 +68,7 @@ class SamForImageSegmentation(ImageSegmentationModel):
 
         predictor = self._get_or_create_sam2()
 
-        with torch.inference_mode(), torch.autocast("mps", dtype=torch.bfloat16):
+        with torch.inference_mode(), torch.autocast(self._device, dtype=torch.bfloat16):
             predictor.set_image(img)
                 
             annotations = []
@@ -77,7 +77,7 @@ class SamForImageSegmentation(ImageSegmentationModel):
                 annotations.append(predictor.predict(box=(x1, y1, x2, y2)))
 
             # Initialize a list to hold the generated image chunks
-            image_chunks: list[Node] = []
+            image_chunks: list[ImageDocument] = []
             # Iterate over the annotations and corresponding bounding boxes
             for ann, bbox in zip(annotations, bbox_list):
                 # Extract the coordinates of the bounding box
