@@ -61,7 +61,7 @@ def try_get_source_ref_node_info(node: BaseNode) -> RelatedNodeInfo:
         return node.as_related_node_info()
     return source_node.as_related_node_info()
 
-def image_to_raw_bytes(pil_image: Image, format="JPEG") -> bytes:
+def image_to_raw_bytes(pil_image: Image.Image, format="JPEG") -> bytes:
     """
     Converts a PIL image to raw bytes.
 
@@ -81,7 +81,7 @@ def image_to_raw_bytes(pil_image: Image, format="JPEG") -> bytes:
     # Get the raw bytes from the BytesIO object
     return buffered.getvalue()
 
-def image_to_base64_binary(pil_image: Image, format="JPEG") -> bytes:
+def image_to_base64_binary(pil_image: Image.Image, format="JPEG") -> bytes:
     """
     Converts a PIL image to base64 binary.
 
@@ -97,7 +97,7 @@ def image_to_base64_binary(pil_image: Image, format="JPEG") -> bytes:
     # Return the BytesIO object
     return base64.b64encode(bytes)
 
-def image_to_base64_string(pil_image: Image, format="JPEG") -> str:
+def image_to_base64_string(pil_image: Image.Image, format="JPEG") -> str:
     """
     Converts a PIL image to base64 string.
 
@@ -113,27 +113,19 @@ def image_to_base64_string(pil_image: Image, format="JPEG") -> str:
     
     # Decode the base64 bytes to a UTF-8 string and return
     return base64_raw.decode('utf-8')
-
-def resolve_image(node: Node) -> BytesIO:
+def is_image(node: Node) -> bool:
     """
-    Resolves the image data from the node.
-
-    This function resolves the image data from the node, which can be in the form of a URL,
-    a base64 encoded string, or raw binary data.
+    Checks if a node is an image node.
 
     Args:
-        node (BaseNode): The node containing the image data.
+        node (Node): The node to check.
 
     Returns:
-        BytesIO: A BytesIO object containing the image data.
+        bool: True if the node is an image node, False otherwise.
     """
-    media_resource = node.image_resource
-    # Check if the media resource is available
-    if media_resource is None:
-        raise ValueError("Node does not contain image data.")
-    return resolve_image(media_resource = media_resource)
+    return node.image_resource is not None
 
-def resolve_image(media_resource: MediaResource) -> bytes:
+def resolve_image(media_resource_or_node: MediaResource|Node) -> bytes:
     """
     Resolves the image from the media resource.
 
@@ -143,6 +135,11 @@ def resolve_image(media_resource: MediaResource) -> bytes:
     Returns:
         Image: base64 binary representation of the Image
     """
+    if (isinstance(media_resource_or_node, Node)):
+        media_resource = media_resource_or_node.image_resource
+    else:
+        media_resource = media_resource_or_node
+
     if media_resource.data:
         return BytesIO(media_resource.data).getvalue()
     if media_resource.url:
@@ -150,8 +147,24 @@ def resolve_image(media_resource: MediaResource) -> bytes:
         return BytesIO(response.content).getvalue()
     if media_resource.path:
         return BytesIO(base64.b64decode(open(media_resource.path, "rb"))).getvalue()
+
+def create_node_from_base_64_string(base64_string: str) -> Node:
+    """
+    Creates a new node from a base64 string.
+
+    Args:
+        base64_string (str): The base64 string to be associated with the new node.
+
+    Returns:
+        Node: The new node created from the base64 string.
+    """
+    image = Image.open(BytesIO(base64.b64decode(base64_string)))
+    new_node = Node(
+        image_resource=MediaResource(data=image_to_base64_binary(image, format="JPEG"),image_mimetype="image/jpg")
+    )
+    return new_node
     
-def create_node_from_image(image: Image) -> Node:
+def create_node_from_image(image: Image.Image, metadata: dict = None) -> Node:
     """
     Creates a new node from an image and an existing node.
 
@@ -162,7 +175,8 @@ def create_node_from_image(image: Image) -> Node:
     Returns:
         Node: The new node created from the image and the existing node.
     """
+
     new_node = Node(
-        image_resource=MediaResource(data=image_to_base64_binary(image))
+        image_resource=MediaResource(data=image_to_base64_binary(image, format="JPEG"),image_mimetype="image/jpg", metadata=metadata)
     )
     return new_node

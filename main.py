@@ -1,4 +1,4 @@
-from llama_index.core.schema import ImageDocument
+from llama_index.core.schema import Node
 from PIL import Image
 import shutil
 import asyncio
@@ -10,6 +10,7 @@ import os
 
 from image_video_parser.object_detection_model import Florence2ForObjectDetectionModel, OwlV2ObjectDetectionModel
 from image_video_parser.object_segmentation_model import SamForImageSegmentation
+from image_video_parser.utils import is_image, resolve_image
 
 load_dotenv()
 
@@ -40,8 +41,8 @@ async def main():
         return
 
     for chunk in result["chunks"]:
-        if isinstance(chunk, ImageDocument):
-            Image.open(chunk.resolve_image()).save(f"./output/segmented_images/{chunk.node_id}.png")
+        if isinstance(chunk, Node) and is_image(chunk.image_resource):
+            Image.open(resolve_image(chunk)).save(f"./output/segmented_images/{chunk.node_id}.png")
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,4 +1,4 @@
-from llama_index.core.schema import ImageDocument, NodeRelationship, TextNode
+from llama_index.core.schema import NodeRelationship, Node,MediaResource
 from llama_index.core.workflow import Event, StartEvent, StopEvent, Workflow, step
 from llama_index.core.workflow.errors import WorkflowRuntimeError
 from llama_index.core.multi_modal_llms import MultiModalLLM
@@ -14,7 +14,7 @@ import torch
 
 from .object_segmentation_model import ImageSegmentationModel
 from .object_detection_model import ObjectDetectionModel
-from .utils import image_to_base64_string, try_get_source_ref_node_info, ImageRegion
+from .utils import create_node_from_base_64_string, create_node_from_image, image_to_base64_string, resolve_image, try_get_source_ref_node_info, ImageRegion
 
 
 class ImageLoadedEvent(Event):
@@ -25,11 +25,11 @@ class ImageLoadedEvent(Event):
     bounding box information and a prompt.
 
     Attributes:
-        image (ImageDocument): The loaded image node.
+        image (Node): The loaded image node.
         bbox_list (Optional[list[ImageRegion]]): A list of bounding boxes associated with the image, if any.
         prompt (Optional[str]): An optional prompt associated with the image.
     """
-    image: ImageDocument
+    image: Node
     bbox_list: Optional[list[ImageRegion]]
     prompt: Optional[str]
 
@@ -39,9 +39,9 @@ class BBoxCreatedEvent(Event):
     Event triggered when a bounding box is created for an image.
 
     Attributes:
-        image (ImageDocument): The image associated with the bounding box.
+        image (Node): The image associated with the bounding box.
     """
-    image: ImageDocument
+    image: Node
     bbox_list: list[ImageRegion]
 
 
@@ -50,11 +50,11 @@ class ImageParsedEvent(Event):
     Event triggered when an image has been successfully parsed.
 
     Attributes:
-        source (ImageDocument): The original image node that was parsed.
-        chunks (list[ImageDocument]): A list of image nodes representing the parsed chunks of the original image.
+        source (Node): The original image node that was parsed.
+        chunks (list[Node]): A list of image nodes representing the parsed chunks of the original image.
     """
-    source: ImageDocument
-    chunks: list[ImageDocument]
+    source: Node
+    chunks: list[Node]
 
 
 class ImageNodeParserWorkflow(Workflow):
@@ -96,17 +96,16 @@ class ImageNodeParserWorkflow(Workflow):
         bbox_list = start_event.get("bbox_list", None)
         prompt = start_event.get("prompt", None)
 
-        image_document: ImageDocument = None
+        image_document: Node = None
 
         # if hasattr(start_event, "image") and start_event.image is not None and isinstance(start_event.image, Node):
         #     image_document = start_event.image
-        if hasattr(start_event, "image") and start_event.image is not None and isinstance(start_event.image, ImageDocument):
+        if hasattr(start_event, "image") and start_event.image is not None and isinstance(start_event.image, Node):
             image_document = start_event.image
         elif hasattr(start_event, "base64_image") and start_event.base64_image is not None:
-            image_document = ImageDocument(image=start_event.base64_image, image_mimetype=start_event.mimetype)
+            image_document = create_node_from_base_64_string(base64_string=start_event.base64_image)
         elif hasattr(start_event, "image_path") and start_event.image_path is not None:
-            image = Image.open(start_event.image_path).convert("RGB")
-            image_document = ImageDocument(image=image_to_base64_string(image), image_mimetype="image/jpg")
+            image_document = create_node_from_image(image=Image.open(start_event.image_path).convert("RGB"))
         else:
             return StopEvent()
         
@@ -158,7 +157,7 @@ class ImageNodeParserWorkflow(Workflow):
             ImageParsedEvent: The event containing the parsed image chunks.
             StopEvent: If no chunks are generated.
         """
-        parsed: list[ImageDocument] = []
+        parsed: list[Node] = []
         image = bounding_boxes_created_event.image
         bbox_list = bounding_boxes_created_event.bbox_list
 
@@ -188,7 +187,7 @@ class ImageNodeParserWorkflow(Workflow):
         Returns:
             StopEvent: An event containing the source image, the image chunks, and their corresponding descriptions.
         """
-        image_descriptions: list[TextNode] = []
+        image_descriptions: list[Node] = []
         
         # Check if a multi-modal language model is available
         if self.multi_modal_llm is not None:
@@ -198,16 +197,11 @@ class ImageNodeParserWorkflow(Workflow):
                     # Use the multi-modal language model to generate a description for the image chunk
                     image_description = self.multi_modal_llm.complete(
                         prompt="Describe the image above in a few words.",
-                        image_documents=[
-                            ImageDocument(
-                                image=image_chunk.image,
-                                image_mimetype=image_chunk.image_mimetype
-                            )
-                        ],
+                        image_documents=[image_chunk],
                     )
                     # Create a TextNode to store the generated description
-                    image_description_node = TextNode(
-                        text=image_description.text,
+                    image_description_node = Node(
+                        text_resource=MediaResource(text=image_description.text, mimetype="text/plain"),
                         mimetype="text/plain"
                     )
                     # Establish a relationship between the description node and the source image node
@@ -228,7 +222,7 @@ class ImageNodeParserWorkflow(Workflow):
 
         return StopEvent(result=result)
 
-    def _parse_image_node_with_sam2(self, image_node: ImageDocument, configuration: dict) -> list[ImageDocument]:
+    def _parse_image_node_with_sam2(self, image_node: Node, configuration: dict) -> list[Node]:
         """
         Parses an image node by cropping it into smaller image chunks based on the provided annotations.
 
@@ -239,7 +233,7 @@ class ImageNodeParserWorkflow(Workflow):
         Returns:
             list[Node]: A list of image chunks generated from the cropping process.
         """
-        img = Image.open(image_node.resolve_image()).convert("RGB")
+        img = Image.open(resolve_image(image_node)).convert("RGB")
 
         sam_settings = configuration.get("sam_settings", {})
 
@@ -272,7 +266,7 @@ class ImageNodeParserWorkflow(Workflow):
                 metadata = dict(region=region)
                 try:
                     # Create an ImageNode from the cropped image and set its relationships
-                    image_chunk = ImageDocument(image=image_to_base64_string(cropped_image), image_mimetype=image_node.image_mimetype, metadata=metadata)
+                    image_chunk = create_node_from_image(image=image_to_base64_string(cropped_image), metadata=metadata)
                     image_chunk.relationships[NodeRelationship.SOURCE] = try_get_source_ref_node_info(image_node)
                     image_chunk.relationships[NodeRelationship.PARENT] = image_node.as_related_node_info()
                     # Append the created image chunk to the list

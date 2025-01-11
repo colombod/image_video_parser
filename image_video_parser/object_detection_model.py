@@ -3,16 +3,16 @@ from typing import Literal, Optional
 import torch
 import numpy as np
 from PIL import Image
-from llama_index.core.schema import ImageDocument
+from llama_index.core.schema import Node
 from transformers import AutoProcessor, Owlv2ForObjectDetection, AutoProcessor, AutoModelForCausalLM
 from transformers.utils.constants import OPENAI_CLIP_MEAN, OPENAI_CLIP_STD
 
-from .utils import ImageRegion
+from .utils import ImageRegion, resolve_image
 from .owl_v2 import Owlv2ProcessorWithNMS
 
 class ObjectDetectionModel(abc.ABC):
     @abc.abstractmethod
-    def detect_bboxes(self, image_node: ImageDocument, **kwargs) -> list[ImageRegion]:
+    def detect_bboxes(self, image_node: Node, **kwargs) -> list[ImageRegion]:
         pass
 
 
@@ -59,7 +59,7 @@ class OwlV2ObjectDetectionModel(ObjectDetectionModel):
             self._processor = Owlv2ProcessorWithNMS.from_pretrained("google/owlv2-base-patch16-ensemble")
         return self._processor
 
-    def detect_bboxes(self, image_node: ImageDocument, prompt: str, score_threshold: float = 0.1, **kwargs) -> list[ImageRegion]:
+    def detect_bboxes(self, image_node: Node, prompt: str, score_threshold: float = 0.1, **kwargs) -> list[ImageRegion]:
         """
         Detects bounding boxes in the image using the Owlv2 model.
 
@@ -72,7 +72,7 @@ class OwlV2ObjectDetectionModel(ObjectDetectionModel):
         Returns:
             list[ImageRegion]: A list of detected bounding boxes with their associated labels and scores.
         """
-        image = Image.open(image_node.resolve_image()).convert("RGB")
+        image = Image.open(resolve_image(image_node)).convert("RGB")
         processor = self._get_or_create_owl_v2_processor()
         model = self._get_or_create_owl_v2()
 
@@ -221,7 +221,7 @@ class Florence2ForObjectDetectionModel(ObjectDetectionModel):
         return self._processor
 
     @torch.no_grad()
-    def detect_bboxes(self, image_node: ImageDocument, prompt: str, **kwargs) -> list[ImageRegion]:
+    def detect_bboxes(self, image_node: Node, prompt: str, **kwargs) -> list[ImageRegion]:
         """
         Detects bounding boxes in the image using the Owlv2 model.
 
@@ -234,7 +234,7 @@ class Florence2ForObjectDetectionModel(ObjectDetectionModel):
         Returns:
             list[ImageRegion]: A list of detected bounding boxes with their associated labels and scores.
         """
-        image = Image.open(image_node.resolve_image()).convert("RGB")
+        image = Image.open(resolve_image(image_node)).convert("RGB")
         processor = self._get_or_create_florence2_processor()
         model = self._get_or_create_florence2()
 

@@ -4,13 +4,13 @@ import torch
 import numpy as np
 from PIL import Image
 
-from .utils import image_to_base64_string, try_get_source_ref_node_info, ImageRegion
+from .utils import create_node_from_image, image_to_base64_string, resolve_image, try_get_source_ref_node_info, ImageRegion
 from sam2.sam2_image_predictor import SAM2ImagePredictor
-from llama_index.core.schema import ImageDocument, NodeRelationship
+from llama_index.core.schema import NodeRelationship, Node
 
 class ImageSegmentationModel(abc.ABC):
     @abc.abstractmethod
-    def segment_image(self, image_node: ImageDocument, **kwargs) -> list[ImageRegion]:
+    def segment_image(self, image_node: Node, **kwargs) -> list[ImageRegion]:
         pass
 
 
@@ -53,7 +53,7 @@ class SamForImageSegmentation(ImageSegmentationModel):
         return self._model
 
 
-    def segment_image(self, image_node: ImageDocument, bbox_list: list[ImageRegion] = None) -> list[ImageDocument]:
+    def segment_image(self, image_node: Node, bbox_list: list[ImageRegion] = None) -> list[Node]:
         """
         Parses an image node by cropping it into smaller image chunks based on the provided annotations.
 
@@ -64,7 +64,7 @@ class SamForImageSegmentation(ImageSegmentationModel):
         Returns:
             list[Node]: A list of image chunks generated from the cropping process.
         """
-        img = Image.open(image_node.resolve_image()).convert("RGB")
+        img = Image.open(resolve_image(image_node)).convert("RGB")
 
         predictor = self._get_or_create_sam2()
 
@@ -77,7 +77,7 @@ class SamForImageSegmentation(ImageSegmentationModel):
                 annotations.append(predictor.predict(box=(x1, y1, x2, y2)))
 
             # Initialize a list to hold the generated image chunks
-            image_chunks: list[ImageDocument] = []
+            image_chunks: list[Node] = []
             # Iterate over the annotations and corresponding bounding boxes
             for ann, bbox in zip(annotations, bbox_list):
                 # Extract the coordinates of the bounding box
@@ -97,7 +97,7 @@ class SamForImageSegmentation(ImageSegmentationModel):
                 metadata = dict(region=region)
 
                 # Create an ImageNode from the cropped image and set its relationships
-                image_chunk = ImageDocument(image=image_to_base64_string(cropped_image), image_mimetype=image_node.image_mimetype, metadata=metadata)
+                image_chunk = create_node_from_image(cropped_image, metadata=metadata)
                 image_chunk.relationships[NodeRelationship.SOURCE] = try_get_source_ref_node_info(image_node)
                 image_chunk.relationships[NodeRelationship.PARENT] = image_node.as_related_node_info()
                 # Append the created image chunk to the list
